@@ -13,6 +13,7 @@
 
 #include "green/mbpt/common_utils.h"
 #include "green/mbpt/except.h"
+#include "green/mbpt/cavity.h"
 
 namespace green::mbpt {
 
@@ -43,6 +44,7 @@ namespace green::mbpt {
     }
     make_hermitian(_S_k);
     make_hermitian(_H_k);
+    cavity::initialize(p, _nao, _nso, _nk);
   }
 
   template <typename G, typename S1, typename St>
@@ -291,16 +293,20 @@ namespace green::mbpt {
   double dyson<utils::shared_object<ztensor<5>>, ztensor<4>, utils::shared_object<ztensor<5>>>::diff(G& g, Sigma1& sigma1,
                                                                                                      Sigma_tau& sigma_tau) {
     auto [e1, e2, e3] = compute_energy(g.object(), sigma1, sigma_tau.object(), _H_k, _ft, _bz_utils, _nao != _nso);
+    e2 += cavity::static_energy_correction(g.object());
+    e3 += cavity::state.photon_energy_correction;
     double diff       = std::abs(_E_1b - e1) + std::abs(_E_hf - e2) + std::abs(_E_corr - e3);
     _E_1b             = e1;
     _E_hf             = e2;
     _E_corr           = e3;
-    return diff;
+    return std::max(diff, cavity::state.bosonic_residual);
   }
 
   template <>
   double dyson<ztensor<5>, ztensor<4>, ztensor<5>>::diff(G& g, Sigma1& sigma1, Sigma_tau& sigma_tau) {
     auto [e1, e2, e3] = compute_energy(g, sigma1, sigma_tau, _H_k, _ft, _bz_utils, _nao != _nso);
+    e2 += cavity::static_energy_correction(g);
+    e3 += cavity::state.photon_energy_correction;
     double diff       = std::abs(_E_1b - e1) + std::abs(_E_hf - e2) + std::abs(_E_corr - e3);
     _E_1b             = e1;
     _E_hf             = e2;
@@ -326,6 +332,7 @@ namespace green::mbpt {
       ar["iter" + std::to_string(iter) + "/Energy_HF"] << _E_hf + _E_nuc;
       ar["iter" + std::to_string(iter) + "/Energy_2b"] << _E_corr;
       ar["iter" + std::to_string(iter) + "/mu"] << _mu;
+      cavity::dump(ar, "iter" + std::to_string(iter), _E_hf + _E_nuc + _E_corr);
       ar.close();
       std::stringstream ss;
       ss << std::scientific << std::setprecision(15);

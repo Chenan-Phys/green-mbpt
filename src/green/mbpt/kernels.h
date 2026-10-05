@@ -31,6 +31,7 @@
 #include "df_integral_t.h"
 #include "except.h"
 #include "mbpt_q0_utils_t.h"
+#include "cavity.h"
 
 namespace green::mbpt::kernels {
   class gw_cpu_kernel {
@@ -43,7 +44,7 @@ namespace green::mbpt::kernels {
                   const bz_utils_t& bz_utils, const ztensor<4>& S_k, bool X2C = false) :
         _beta(p["BETA"]), _nts(ft.sd().repn_fermi().nts()), _nts_b(ft.sd().repn_bose().nts()), _ni(ft.sd().repn_fermi().ni()),
         _ni_b(ft.sd().repn_bose().ni()), _nw(ft.sd().repn_fermi().nw()), _nw_b(ft.sd().repn_bose().nw()), _nk(bz_utils.nk()),
-        _ink(bz_utils.ink()), _nq(bz_utils.nq()), _inq(bz_utils.inq()), _nao(nao), _nso(nso), _ns(ns), _NQ(NQ), _X2C(X2C), _p_sp(p["P_sp"]), _sigma_sp(p["Sigma_sp"]),
+        _ink(bz_utils.ink()), _nq(bz_utils.nq()), _inq(bz_utils.inq()), _nao(nao), _nso(nso), _ns(ns), _NQ(NQ + (cavity::state.enabled ? 1 : 0)), _X2C(X2C), _p_sp(p["P_sp"]), _sigma_sp(p["Sigma_sp"]),
         _ft(ft), _bz_utils(bz_utils), _path(p["dfintegral_file"]), statistics("GW"),
         _q0_utils(bz_utils.inq(), 0, S_k, _path, p["q0_treatment"]),
         // _P0_tilde(0, 0, 0, 0),
@@ -120,6 +121,14 @@ namespace green::mbpt::kernels {
      * @param k - [INPUT] (k1, k2)
      */
     void read_next(const std::array<size_t, 2>& k);
+    template<typename prec>
+    void fitted_vertices(tensor<prec,3>& v, size_t k1, size_t k2) {
+      if (!cavity::state.enabled) { _coul_int1->symmetrize(v,k1,k2); return; }
+      // Fill the Coulomb prefix directly; avoid a second multi-GB AO vertex tensor.
+      _coul_int1->symmetrize(v,k1,k2,0,_NQ-1);
+      MMatrixX<prec> last(v.data()+(_NQ-1)*_nao*_nao,_nao,_nao);
+      last = (cavity::state.lambda*cavity::state.dipole).template cast<prec>();
+    }
 
     /**
      * Evaluate polarization function P for a given job portion (maybe a single k-point or a set of k-points),

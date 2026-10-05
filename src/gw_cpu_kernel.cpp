@@ -30,7 +30,7 @@ namespace green::mbpt::kernels {
 
   void gw_cpu_kernel::solve(G_type& g, St_type& sigma_tau) {
     auto cntx = g.cntx();
-    _coul_int1 = new df_integral_t(_path, _nao, _NQ, _bz_utils, cntx);
+    _coul_int1 = new df_integral_t(_path, _nao, _NQ-(cavity::state.enabled ? 1 : 0), _bz_utils, cntx);
     utils::shared_object<ztensor<4>> P0_tilde_s(std::array<size_t, 4>{_nts, 1, _NQ, _NQ}, cntx);
     utils::shared_object<ztensor<4>> Pw_tilde_s(std::array<size_t, 4>{_nw_b, 1, _NQ, _NQ}, cntx);
     MPI_Datatype                     dt_matrix     = utils::create_matrix_datatype<std::complex<double>>(_nso * _nso);
@@ -146,7 +146,7 @@ namespace green::mbpt::kernels {
     // NOTE: k = (k1, k1+q_ir)
     // (Q, p, m) or (Q', t, n)*
     tensor<prec, 3> v(_NQ, _nao, _nao);
-    _coul_int1->symmetrize(v, k1_k1q[0], k1_k1q[1]);
+    fitted_vertices(v, k1_k1q[0], k1_k1q[1]);
     MMatrixX<prec> vm(v.data(), _NQ, _nao * _nao);
     MMatrixX<prec> vmm(v.data(), _NQ * _nao, _nao);
     // #pragma omp parallel
@@ -243,12 +243,53 @@ namespace green::mbpt::kernels {
     MatrixXcd              identity = MatrixXcd::Identity(_NQ, _NQ);
     // Eigen::FullPivLU<MatrixXcd> lusolver(_NQ,_NQ);
     Eigen::LDLT<MatrixXcd> ldltsolver(_NQ);
+    ztensor<4> qed_energy_w(_nw_b,1,1,1), qed_delta_w(_nw_b,1,1,1);
+    ztensor<4> qed_chi_w(_nw_b,1,1,1);
+    qed_energy_w.set_zero(); qed_delta_w.set_zero(); qed_chi_w.set_zero();
     for (size_t n = w_offset, loc_n = 0; loc_n < nw_local; ++n, ++loc_n) {
+      if (cavity::state.enabled) {
+        const double nu = _ft.wsample_bose()(n);
+        const double omega = cavity::state.omega;
+        const double denom = nu*nu+omega*omega;
+        Eigen::VectorXcd weights = Eigen::VectorXcd::Ones(_NQ);
+        weights(_NQ-1) = std::abs(nu)/std::sqrt(denom);
+        const MatrixXcd p = matrix(P0_w(n,0));
+        const MatrixXcd eps = identity-weights.asDiagonal()*p*weights.asDiagonal();
+        const MatrixXcd inverse = ldltsolver.compute(eps).solve(identity);
+        const MatrixXcd screened = weights.asDiagonal()*inverse*weights.asDiagonal();
+        // Only the dipole contraction is needed for photon/energy diagnostics.
+        const auto c = p(_NQ-1,_NQ-1)+(p.row(_NQ-1)*screened*p.col(_NQ-1)).eval()(0,0);
+        qed_chi_w(n,0,0,0) = c;
+        qed_delta_w(n,0,0,0) = 2.0*omega*omega*omega*c/(denom*denom);
+        qed_energy_w(n,0,0,0) = omega*omega*nu*nu*c/(denom*denom);
+        // Subtract instantaneous Coulomb + DSE, not the retarded bare kernel.
+        matrix(P0_w(n,0)) = 0.5*(screened+screened.adjoint())-identity;
+        continue;
+      }
       MatrixXcd temp     = identity - matrix(P0_w(n, 0));
       // temp = lusolver.compute(temp).inverse().eval();
       temp               = ldltsolver.compute(temp).solve(identity).eval();
       temp               = 0.5 * (temp + temp.conjugate().transpose().eval());
       matrix(P0_w(n, 0)) = (temp * matrix(P0_w(n, 0))).eval();
+    }
+    if (cavity::state.enabled) {
+      ztensor<4> et(_nts,1,1,1), dt(_nts,1,1,1);
+      _ft.w_b_to_tau_f(qed_energy_w,et);
+      _ft.w_b_to_tau_f(qed_delta_w,dt);
+      const double nb = 1.0/std::expm1(_beta*cavity::state.omega);
+      cavity::state.photon_energy_correction = et(_nts-1,0,0,0).real()+cavity::state.omega*nb;
+      cavity::state.photon_variance = 1.0+2.0*nb-dt(_nts-1,0,0,0).real();
+      cavity::state.bosonic_residual = 1.0;
+      if (cavity::state.photon_delta_w.size() == qed_delta_w.size()) {
+        double delta = 0, norm = 0;
+        for (size_t i=0;i<qed_delta_w.size();++i) {
+          delta += std::norm(qed_delta_w.data()[i]-cavity::state.photon_delta_w.data()[i]);
+          norm += std::norm(qed_delta_w.data()[i]);
+        }
+        cavity::state.bosonic_residual = std::sqrt(delta/std::max(norm,1.0));
+      }
+      cavity::state.chi_w = qed_chi_w;
+      cavity::state.photon_delta_w = qed_delta_w;
     }
     statistics.start("P reduce");
     MPI_Win_sync(Pw_s.win());
@@ -280,6 +321,7 @@ namespace green::mbpt::kernels {
 
   template <typename prec>
   MatrixX<prec> gw_cpu_kernel::eval_p0_bz_from_ibz(const ztensor<2>& p0_tilde_q_ibz, size_t q_bz) {
+    if (cavity::state.enabled) return matrix(p0_tilde_q_ibz).template cast<prec>();
     MatrixX<prec> U_q(_NQ, _NQ);
     _bz_utils.q_symmetry().q_sym_transform_p0(U_q, q_bz);
     // Symmetry transform P to current q point and apply conjugation if needed
@@ -308,7 +350,7 @@ namespace green::mbpt::kernels {
     size_t          k1_pos       = _bz_utils.k_symmetry().reduced_point(k1_k1mq[0]);
     // (Q, i, m) or (Q', j, n)*
     tensor<prec, 3> v(_NQ, _nao, _nao);
-    _coul_int1->symmetrize(v, k1_k1mq[0], k1_k1mq[1]);
+    fitted_vertices(v, k1_k1mq[0], k1_k1mq[1]);
     MMatrixX<prec> vm(v.data(), _NQ * _nao, _nao);
 
     // bosonic momentum q index in FBZ
