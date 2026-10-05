@@ -10,11 +10,19 @@ function(add_green_kernel CUSTOM_KERNELS_IN)
         endif()
 
         Include(FetchContent)
+        set(kernel_revision ${GREEN_RELEASE})
+        set(kernel_repository ${KERNEL})
+        if("${KERNEL_NAME}" STREQUAL "green-gpu")
+            set(GREEN_GPU_GIT_REPOSITORY "https://github.com/Chenan-Phys/green-gpu.git" CACHE STRING "Repository containing the validated SG GPU reader")
+            set(GREEN_GPU_GIT_TAG "0110ef3037e4fd92f58a3d2fdba9f876549b38c9" CACHE STRING "Validated SG GPU reader revision")
+            set(kernel_repository ${GREEN_GPU_GIT_REPOSITORY})
+            set(kernel_revision ${GREEN_GPU_GIT_TAG})
+        endif()
 
         FetchContent_Declare(
             ${KERNEL_NAME}
-            GIT_REPOSITORY ${KERNEL}
-            GIT_TAG ${GREEN_RELEASE} # or a later release
+            GIT_REPOSITORY ${kernel_repository}
+            GIT_TAG ${kernel_revision}
         )
 
         FetchContent_MakeAvailable(${KERNEL_NAME})
