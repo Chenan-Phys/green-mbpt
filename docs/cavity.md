@@ -116,17 +116,19 @@ pthread LP64 OpenBLAS variant is used only for the native child process;
 the default system BLAS is single threaded. `cavity_collect.py` exports compact
 manifests and per-method statuses. Scientific scripts must run on GREEN_workstation.
 
-Application repositories are [TTF-TCNE](https://github.com/Chenan-Phys/green-qed-ttf-tcne)
-and [Na20](https://github.com/Chenan-Phys/green-qed-na20). Beta 1000 Ha^-1 is a
-finite-temperature pilot; sodium energy differences need spin and low-temperature
-checks. An internal-energy difference is not automatically a free-energy difference.
+The sodium-cluster and TTF-TCNE applications, their launchers, and their separate
+repositories were permanently removed on 2026-10-06 at the user's request.
+The shared solver and independent small-system validation remain. Beta 1000 Ha^-1
+is a finite-temperature pilot; an internal-energy difference is not automatically
+a free-energy difference. Historical application examples below document checks
+that informed the shared implementation, rather than active application runs.
 
 The acceptance check also requires an unnormalized overlap-weighted density
 residual below 1e-6 electron and agreement of the reported static HF energy with
 an independent same-factor PySCF evaluation below 1e-7 Ha. This check applies
 to the HF component of GW as well. A sodium cation DIIS run passed successive
 energy/density changes but failed the functional-energy check by 1.1e-5 Ha;
-it is excluded from charging differences and is being polished. Linear
+it was excluded from charging differences. Linear
 self-energy mixing stabilizes the initial TTF GW control after DIIS oscillation.
 Mixing type/weight are explicit runner/campaign options. Each case has a
 nonblocking file lock plus a check for legacy native writers in its directory.

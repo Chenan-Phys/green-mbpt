@@ -56,7 +56,7 @@ def compress(path,replace_original=False,allow_size_increase=False):
     original=Path(path).absolute()
     if original.is_symlink(): raise ValueError("Do not replace symlinked checkpoints")
     path=original.resolve()
-    permitted=[Path("/data/cwei/green_runs")/root for root in ("qed-na20","qed-ttf-tcne","qed-validation")]
+    permitted=[Path("/data/cwei/green_runs/qed-validation")]
     if path.name not in ("hf.h5","gw.h5") or not any(path.is_relative_to(root) for root in permitted):
         raise ValueError("Only this task's native result checkpoints may be compressed")
     with case_guard(path.parent):

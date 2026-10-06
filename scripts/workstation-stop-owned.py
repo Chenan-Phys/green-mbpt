@@ -24,8 +24,7 @@ if args.directory:
     if "/green/install-qed/cavity-general" not in executable or not executable.endswith("/bin/mbpt.exe"):
         raise RuntimeError("Unexpected executable")
 else:
-    allowed=[str(Path.home()/"green/cavity-applications")+"/",
-             str(Path.home()/"green/qed-research/python/cavity_run.py"),
+    allowed=[str(Path.home()/"green/qed-research/python/cavity_run.py"),
              str(Path.home()/"green/qed-research/python/cavity_queue.py")]
     if not any(x in command for x in allowed): raise RuntimeError("Unexpected runner")
 for _ in range(200):
