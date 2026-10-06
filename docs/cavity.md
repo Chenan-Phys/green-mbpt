@@ -215,3 +215,13 @@ diagnostic converges in energy but misses N by 2.73e-5 and is excluded. Sodium
 production controls therefore retain chemical-potential searches. Provenance
 and caches distinguish these ensembles. JSON acceptance flags are normalized
 to Python booleans so rejected number checks can be saved reliably.
+
+`cavity_lossless_compress.py` creates a gzip/shuffle-compressed copy of dormant
+task result files. Every dataset byte, datatype, shape, maximum shape and
+attribute enters a storage-independent SHA-256 comparison. All iterations are
+retained. The default retains the original; `--replace-original` requires
+explicit authorization for the named remote files. A fresh copied H2 control
+requires verified gzip filters, identical diagnostics and a native restart.
+For this small validation copy only, compression may increase its size; the
+utility normally retains originals when repacking gives no size reduction.
+Inputs and integral caches are outside this utility's scope.
