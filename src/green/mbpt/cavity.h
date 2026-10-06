@@ -3,6 +3,7 @@
 #define GREEN_MBPT_CAVITY_H
 
 #include <cmath>
+#include <array>
 #include <limits>
 #include <green/h5pp/archive.h>
 #include "common_defs.h"
@@ -10,6 +11,8 @@
 namespace green::mbpt::cavity {
   struct configuration {
     bool enabled = false;
+    bool fixed_spin = false, spin_mu_initialized = false;
+    std::array<double,2> target_spin{}, mu_spin{};
     double omega = 0.0, lambda = 0.0, nuclear_dipole = 0.0;
     double photon_energy_correction = 0.0, photon_variance = 1.0;
     double coherent_b = 0.0, bosonic_residual = 0.0;
@@ -19,7 +22,7 @@ namespace green::mbpt::cavity {
   // Initial molecular CPU implementation deliberately permits one MPI rank.
   inline configuration state;
 
-  inline void initialize(const params::params& p, size_t nao, size_t nso, size_t nk) {
+  inline void initialize(const params::params& p, size_t nao, size_t nso, size_t nk, size_t ns, double nel) {
     state = configuration{};
     h5pp::archive ar(p["input_file"], "r");
     if (!ar.has_group("QED")) return;
@@ -51,6 +54,20 @@ namespace green::mbpt::cavity {
         (state.second_moment-state.second_moment.adjoint()).norm() > 1e-10)
       throw std::invalid_argument("Nonfinite, non-Hermitian or invalid QED parameters");
     state.enabled = true;
+    if (ar.has_group("QED/fixed_spin")) {
+      dtensor<1> targets;
+      ar["QED/fixed_spin/target"] >> targets;
+      if (ns != 2 || targets.size() != 2 || !p["const_density"].as<bool>())
+        throw std::invalid_argument("Fixed spin requires unrestricted molecular constant-density QED");
+      for (size_t s=0;s<2;++s) {
+        state.target_spin[s]=targets(s);
+        if (!std::isfinite(targets(s)) || targets(s)<0 || targets(s)>nso)
+          throw std::invalid_argument("Invalid fixed-spin electron count");
+      }
+      if (std::abs(targets(0)+targets(1)-nel)>1e-8)
+        throw std::invalid_argument("Fixed-spin populations must sum to the input electron count");
+      state.fixed_spin=true;
+    }
     const double beta = p["BETA"];
     const double nb = 1.0 / std::expm1(beta * state.omega);
     state.photon_variance = 1.0 + 2.0 * nb;
@@ -97,6 +114,12 @@ namespace green::mbpt::cavity {
     ar[prefix+"/QED/Bosonic_residual"] << state.bosonic_residual;
     ar["QED/omega_hartree"] << state.omega;
     ar["QED/lambda_au"] << state.lambda;
+    if (state.fixed_spin) {
+      dtensor<1> targets(2), chemical_potential(2);
+      for (size_t s=0;s<2;++s) {targets(s)=state.target_spin[s]; chemical_potential(s)=state.mu_spin[s];}
+      ar[prefix+"/QED/Target_spin_electrons"] << targets;
+      ar[prefix+"/QED/Mu_spin"] << chemical_potential;
+    }
     if (state.chi_w.size()) {
       ar[prefix+"/QED/Chi_dipole_w"] << state.chi_w;
       ar[prefix+"/QED/Photon_delta_w"] << state.photon_delta_w;

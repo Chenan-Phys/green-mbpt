@@ -44,7 +44,7 @@ namespace green::mbpt {
     }
     make_hermitian(_S_k);
     make_hermitian(_H_k);
-    cavity::initialize(p, _nao, _nso, _nk);
+    cavity::initialize(p, _nao, _nso, _nk, _ns, _nel);
   }
 
   template <typename G, typename S1, typename St>
@@ -73,7 +73,8 @@ namespace green::mbpt {
 
   template <typename G, typename S1, typename St>
   double dyson<G, S1, St>::compute_number_of_electrons(double                                   mu,
-                                                       const std::vector<std::complex<double>>& eigenvalues_Sigma_p_F) const {
+                                                       const std::vector<std::complex<double>>& eigenvalues_Sigma_p_F,
+                                                       int selected_spin) const {
     // Get density matrix for given mu
     MatrixXcd            TtBn = _ft.Ttn().block(_nts - 1, 0, 1, _nw);
     double               nel  = 0.0;
@@ -89,7 +90,8 @@ namespace green::mbpt {
       muomega     = _ft.wsample_fermi()(iw) * 1.0i + mu;
       // Trace over AO index
       for (size_t i = 0; i < _nso; ++i, ++iii) {
-        trace_w(iw, 0) += _bz_utils.nkpw() * _bz_utils.k_symmetry().weight()[k_ir] / (muomega - eigenvalues_Sigma_p_F[iii]);
+        if (selected_spin<0 || selected_spin==int(is))
+          trace_w(iw, 0) += _bz_utils.nkpw() * _bz_utils.k_symmetry().weight()[k_ir] / (muomega - eigenvalues_Sigma_p_F[iii]);
       }
     }
     // Transform to tau
@@ -115,6 +117,38 @@ namespace green::mbpt {
     mu = _mu;
     std::vector<std::complex<double>> eigenvalues_Sigma_p_F;
     selfenergy_eigenspectra(sigma1, sigma_tau_s, eigenvalues_Sigma_p_F);
+    if (cavity::state.fixed_spin) {
+      double total=0;
+      for (int s=0;s<2;++s) {
+        const double target=cavity::state.target_spin[s];
+        const double tolerance=_tol*std::max(1.0,target);
+        auto count=[&](double m) {return compute_number_of_electrons(m,eigenvalues_Sigma_p_F,s);};
+        double guess=cavity::state.spin_mu_initialized ? cavity::state.mu_spin[s] : _mu;
+        double found=count(guess), lo=guess, hi=guess, step=0.5;
+        if (std::abs(found-target)>tolerance) {
+          int bracket=0;
+          while (count(lo)>target+tolerance && bracket++<64) {lo-=step;step*=2;}
+          step=0.5; bracket=0;
+          while (count(hi)<target-tolerance && bracket++<64) {hi+=step;step*=2;}
+          if (count(lo)>target+tolerance || count(hi)<target-tolerance)
+            throw mbpt_chemical_potential_search_failure("Fixed-spin chemical potential bracket failed");
+          for (int iteration=0;iteration<160;++iteration) {
+            guess=0.5*(lo+hi); found=count(guess);
+            if (std::abs(found-target)<=tolerance) break;
+            if (found>target) hi=guess; else lo=guess;
+          }
+          if (!std::isfinite(found) || std::abs(found-target)>tolerance)
+            throw mbpt_chemical_potential_search_failure("Fixed-spin chemical potential search failed");
+        }
+        cavity::state.mu_spin[s]=guess;
+        total+=found;
+        if (!utils::context().global_rank)
+          std::cout << "QED fixed-spin " << s << ": N=" << found << ", mu=" << guess << "\n";
+      }
+      cavity::state.spin_mu_initialized=true;
+      t.end();
+      return {total,0.5*(cavity::state.mu_spin[0]+cavity::state.mu_spin[1])};
+    }
     // Start search for the chemical potential
     nel = compute_number_of_electrons(mu, eigenvalues_Sigma_p_F);
     if (!utils::context().global_rank && _verbose != 0) ss << "nel:" << nel << " mu: " << mu << " target nel:" << _nel << std::endl;
@@ -206,7 +240,8 @@ namespace green::mbpt {
       for (int it = 0; it < _nts; ++it) matrix(Sigma_k(it)) = matrix(sigma_tau(it, is, ik));
       _ft.tau_to_omega(Sigma_k, Sigma_w, 1);
       for (int ic = 0; ic < _nw; ++ic) {
-        std::complex<double> muomega = _ft.wsample_fermi()(ic) * 1.0i + _mu;
+        const double chemical_potential=cavity::state.fixed_spin ? cavity::state.mu_spin[is] : _mu;
+        std::complex<double> muomega = _ft.wsample_fermi()(ic) * 1.0i + chemical_potential;
         matrix(G_w(ic)) = muomega * matrix(_S_k(is, ik)) - matrix(_H_k(is, ik)) - matrix(sigma1(is, ik)) - matrix(Sigma_w(ic));
         matrix(G_w(ic)) = lusolver.compute(matrix(G_w(ic))).inverse().eval();
       }
@@ -259,7 +294,8 @@ namespace green::mbpt {
       for (int it = 0; it < _nts; ++it) matrix(Sigma_k(it)) = matrix(sigma_tau(it, is, ik));
       _ft.tau_to_omega(Sigma_k, Sigma_w, 1);
       for (int ic = 0; ic < _nw; ++ic) {
-        std::complex<double> muomega = _ft.wsample_fermi()(ic) * 1.0i + _mu;
+        const double chemical_potential=cavity::state.fixed_spin ? cavity::state.mu_spin[is] : _mu;
+        std::complex<double> muomega = _ft.wsample_fermi()(ic) * 1.0i + chemical_potential;
         matrix(G_w(ic)) = muomega * matrix(_S_k(is, ik)) - matrix(_H_k(is, ik)) - matrix(sigma1(is, ik)) - matrix(Sigma_w(ic));
         matrix(G_w(ic)) = lusolver.compute(matrix(G_w(ic))).inverse().eval();
         // G_w(ic).matrix() = G_w(ic).matrix().inverse();

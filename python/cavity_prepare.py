@@ -102,6 +102,10 @@ def prepare(spec, directory):
             q["effective_ionic_charges"] = ionic
             q["ao_atom_index"] = np.asarray([int(label[0]) for label in mol.ao_labels(fmt=False)])
             q["geometry_angstrom"] = mol.atom_coords()*BOHR
+            if spec.get("fix_spin",False):
+                if spin==0:
+                    raise ValueError("Fixed-spin input requires an unrestricted molecular specification")
+                q.create_group("fixed_spin")["target"]=np.asarray(mol.nelec,dtype=float)
         Path("molecule.json").write_text(mol.dumps())
         provenance = dict(spec, nelectron=mol.nelectron, nao=mol.nao_nr(),
                           ionic_charges=ionic.tolist(), mbtools_file=sys.modules[pyscf_mol_init.__module__].__file__,

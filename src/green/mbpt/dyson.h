@@ -62,7 +62,8 @@ namespace green::mbpt {
      * @param eigenvalues_Sigma_p_F - eigenspectra of (H + sigma1 + sigma_w)
      * @return number of electrons for given parameters
      */
-    double compute_number_of_electrons(double mu, const std::vector<std::complex<double>>& eigenvalues_Sigma_p_F) const;
+    double compute_number_of_electrons(double mu, const std::vector<std::complex<double>>& eigenvalues_Sigma_p_F,
+                                       int selected_spin=-1) const;
 
     /**
      * From diagonalized Dyson equation find new chemical potential

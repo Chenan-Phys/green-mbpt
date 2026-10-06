@@ -22,7 +22,9 @@ if args.directory:
     if str((proc/"cwd").resolve())!=str(expected): raise RuntimeError("PID belongs to another case")
     if "green/install-qed/cavity-general/bin/mbpt.exe" not in command: raise RuntimeError("Unexpected executable")
 else:
-    allowed=[str(Path.home()/"green/cavity-applications")+"/",str(Path.home()/"green/qed-research/python/cavity_run.py")]
+    allowed=[str(Path.home()/"green/cavity-applications")+"/",
+             str(Path.home()/"green/qed-research/python/cavity_run.py"),
+             str(Path.home()/"green/qed-research/python/cavity_queue.py")]
     if not any(x in command for x in allowed): raise RuntimeError("Unexpected runner")
 for _ in range(200):
     try:

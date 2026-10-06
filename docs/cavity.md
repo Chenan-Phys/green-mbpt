@@ -69,7 +69,14 @@ charging energies are interpreted. Approximation errors remain distinct from the
 The native `Energy_HF` and `Energy_2b` iteration fields incorporate these corrections;
 `Energy_total_QED` and photon diagnostics are also saved. Connected bosonic changes
 participate in the convergence criterion. The current spin-unrestricted driver fixes
-total electron count; inspect individual spin counts in charged calculations.
+total electron count by default; inspect individual spin counts in charged calculations.
+The optional `QED/fixed_spin/target[2]` dataset constrains the two mean spin
+populations through separate chemical-potential searches. It requires ns=2 and
+constant density, and the populations must sum to the input electron count.
+The chemical potentials are Lagrange multipliers, not external magnetic fields;
+the original electronic Hamiltonian and energy estimator are unchanged.
+This constrains mean populations at finite temperature, rather than implementing
+an exact canonical ensemble. `Mu_spin` and `Target_spin_electrons` are saved.
 
 ## Validation and limitations
 
@@ -91,6 +98,7 @@ compared with 0.53557 meV from finite electron-photon CI. Photon cutoffs 8/16
 agree within 1e-9 Ha. The independent coherent HF expectation agrees at numerical
 precision. Coupling parity and zero-coupling recovery pass. H2+/H2- checks recover
 the expected spin occupations and validate the unrestricted HF energy estimator.
+The optional fixed-spin version passes the same references and 26 native tests.
 
 **Unresolved:** shifting the dipole origin by 1 Angstrom changes the H2 GW
 energy by 1.0718e-6 Ha (0.02917 meV), while HF is invariant. This is appreciable

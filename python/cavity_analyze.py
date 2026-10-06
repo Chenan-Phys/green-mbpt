@@ -53,6 +53,9 @@ def analyze(directory, result="sim.h5"):
         for key in ("Photon_variance", "Photon_energy_correction", "Coherent_b", "Bosonic_residual"):
             if f"QED/{key}" in last:
                 out[key] = float(last[f"QED/{key}"][()])
+        for key in ("Mu_spin","Target_spin_electrons"):
+            if f"QED/{key}" in last:
+                out[key]=np.asarray(last[f"QED/{key}"]).tolist()
         if iteration > 1:
             prev = f[f"iter{iteration-1}"]
             ep = float(prev["Energy_HF"][()])+float(prev["Energy_2b"][()])
@@ -62,6 +65,8 @@ def analyze(directory, result="sim.h5"):
         out["accepted_numerically"] = (abs(ne-spec["nelectron"]) < 1e-6 and
              out.get("native_energy_residual", float("inf")) < 1e-8 and
              out.get("Bosonic_residual", 0.0) < 1e-8)
+        if spec.get("fix_spin",False):
+            out["accepted_numerically"] &= out["accepted_for_requested_spin_sector"]
     np.save(directory/"density_ao.npy", dm)
     (directory/"analysis.json").write_text(json.dumps(out, indent=2)+"\n")
     return out
