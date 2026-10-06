@@ -335,7 +335,8 @@ namespace green::mbpt {
     _E_1b             = e1;
     _E_hf             = e2;
     _E_corr           = e3;
-    return std::max(diff, cavity::state.bosonic_residual);
+    return std::max({diff, cavity::state.bosonic_residual,
+                     cavity::density_convergence(g.object(),_S_k)});
   }
 
   template <>
@@ -347,7 +348,8 @@ namespace green::mbpt {
     _E_1b             = e1;
     _E_hf             = e2;
     _E_corr           = e3;
-    return diff;
+    return std::max({diff, cavity::state.bosonic_residual,
+                     cavity::density_convergence(g,_S_k)});
   }
 
   template <typename G, typename S1, typename St>

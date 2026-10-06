@@ -50,7 +50,7 @@ def analyze(directory, result="sim.h5"):
         ao_atoms = np.asarray(inp["QED/ao_atom_index"])
         out["population_by_atom"] = [float(np.diag(orth_dm)[ao_atoms==i].real.sum())
                                       for i in range(len(spec["atoms"]))]
-        for key in ("Photon_variance", "Photon_energy_correction", "Coherent_b", "Bosonic_residual"):
+        for key in ("Photon_variance", "Photon_energy_correction", "Coherent_b", "Bosonic_residual", "Density_residual_frobenius"):
             if f"QED/{key}" in last:
                 out[key] = float(last[f"QED/{key}"][()])
         for key in ("Mu_spin","Target_spin_electrons"):
@@ -66,13 +66,36 @@ def analyze(directory, result="sim.h5"):
             weight=2 if ns==1 else 1
             out["density_residual_frobenius_electrons"]=float(np.sqrt(sum(
                 np.linalg.norm(root@(weight*(x-y))@root)**2 for x,y in zip(dm_spin,old_spin))))
+        requested_threshold=1e-8
+        method=Path(result).stem
+        stamp_path=directory/f"{method}_provenance.json"
+        if stamp_path.exists():
+            command=json.loads(stamp_path.read_text()).get("command",[])
+            if "--E_thr" in command:
+                requested_threshold=min(1e-8,float(command[command.index("--E_thr")+1]))
+        out["requested_energy_threshold_hartree"]=requested_threshold
         out["accepted_numerically"] = (abs(ne-spec["nelectron"]) < 1e-6 and
-             out.get("native_energy_residual", float("inf")) < 1e-8 and
+             out.get("native_energy_residual", float("inf")) < requested_threshold and
              out.get("density_residual_frobenius_electrons", float("inf")) < 1e-6 and
              out.get("Bosonic_residual", 0.0) < 1e-8)
         if spec.get("fix_spin",False):
             out["accepted_numerically"] &= out["accepted_for_requested_spin_sector"]
-    np.save(directory/"density_ao.npy", dm)
+        out["native_basis"]=spec.get("native_basis","ao")
+        ao_dm=dm
+        if "QED/native_to_ao" in inp:
+            x=np.asarray(inp["QED/native_to_ao"])
+            ao_dm=x@dm@x.conj().T
+            np.save(directory/"density_native.npy",dm)
+    np.save(directory/"density_ao.npy", ao_dm)
+    # Both HF and GW have a static HF energy part. Check it independently;
+    # energy/density changes alone can stagnate after DIIS extrapolation.
+    from cavity_hf_reference import hf_expectation
+    out["hf_functional_energy_hartree"]=hf_expectation(directory,result)
+    with h5py.File(directory/result) as f:
+        reported_hf=float(f[f"iter{iteration}/Energy_HF"][()])
+    out["hf_functional_consistency_error_hartree"]=abs(reported_hf-
+                                                     out["hf_functional_energy_hartree"])
+    out["accepted_numerically"] &= out["hf_functional_consistency_error_hartree"]<1e-7
     (directory/"analysis.json").write_text(json.dumps(out, indent=2)+"\n")
     return out
 

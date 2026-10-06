@@ -17,20 +17,25 @@ from cavity_run import run
 from cavity_analyze import complex_array
 
 
-def exact_reference(directory, coupling, cutoff):
+def exact_reference(directory, coupling, cutoff, observables=False):
     mol=gto.loads((directory/"molecule.json").read_text())
+    norb=mol.nao_nr(); nelec=mol.nelec
+    na=math.comb(norb,nelec[0]); nb=math.comb(norb,nelec[1]); dim=na*nb
+    if dim*cutoff>4096:
+        raise ValueError("Exact polaritonic reference is limited to small validation systems")
     with h5py.File(directory/"input.h5") as f:
         s=complex_array(f["HF/S-k"])[0,0].real
         d=np.asarray(f["QED/dipole"])
         r2=np.asarray(f["QED/second_moment"])
+        if "QED/native_to_ao" in f:
+            s=np.asarray(f["QED/original_overlap"])
+            d=np.asarray(f["QED/original_dipole"])
+            r2=np.asarray(f["QED/original_second_moment"])
         omega=float(f["QED/omega_hartree"][()])
     values,vectors=eigh(s)
     x=(vectors/np.sqrt(values))@vectors.T
     h=x.T@scf.RHF(mol).get_hcore()@x
     eri=ao2mo.kernel(mol,x,compact=False).reshape((mol.nao_nr(),)*4)
-    norb=mol.nao_nr()
-    nelec=mol.nelec
-    na=math.comb(norb,nelec[0]); nb=math.comb(norb,nelec[1]); dim=na*nb
     h2=fci.direct_spin1.absorb_h1e(h,eri,norb,nelec,.5)
     d=x.T@d@x
     correction=x.T@r2@x-d@d
@@ -47,33 +52,21 @@ def exact_reference(directory, coupling, cutoff):
     b=diags(np.sqrt(np.arange(1,cutoff)),1,shape=(cutoff,cutoff))
     ham=kron(csr_matrix(he),eye(cutoff))+kron(eye(dim),diags(omega*np.arange(cutoff)))
     ham+=kron(csr_matrix(-np.sqrt(omega/2)*coupling*q),b+b.T)
-    return float(eigsh(ham,k=1,which="SA",tol=1e-12,return_eigenvectors=False)[0])
+    if not observables:
+        return float(eigsh(ham,k=1,which="SA",tol=1e-12,return_eigenvectors=False)[0])
+    values,vectors=eigsh(ham,k=1,which="SA",tol=1e-12)
+    wave=vectors[:,0]
+    coordinate=kron(eye(dim),b+b.T)
+    momentum=kron(eye(dim),1j*(b.T-b))
+    mean=float(np.vdot(wave,coordinate@wave).real)
+    mean_p=float(np.vdot(wave,momentum@wave).real)
+    qvar=float(np.vdot(coordinate@wave,coordinate@wave).real)-mean**2
+    pvar=float(np.vdot(momentum@wave,momentum@wave).real)-mean_p**2
+    return {"energy_hartree":float(values[0]),"connected_photon_q_variance":qvar,
+            "connected_photon_p_variance":pvar,"connected_photon_number":(qvar+pvar-2)/4}
 
 
-def hf_expectation(directory):
-    mol=gto.loads((directory/"molecule.json").read_text())
-    mf=(scf.UHF(mol) if mol.spin else scf.RHF(mol)).density_fit()
-    mf.with_df._cderi=str(directory/"cderi_mol.h5")
-    with h5py.File(directory/"hf.h5") as f, h5py.File(directory/"input.h5") as inp:
-        iteration=max(int(k[4:]) for k in f if k.startswith("iter") and k[4:].isdigit())
-        end=complex_array(f[f"iter{iteration}/G_tau/data"][-1])
-        dm_spin=-end[:,0].real
-        dm=2*dm_spin[0] if end.shape[0]==1 else dm_spin.sum(axis=0)
-        d=np.asarray(inp["QED/dipole"]); r2=np.asarray(inp["QED/second_moment"])
-        coupling=float(inp["QED/lambda_au"][()])
-    if mol.spin:
-        j,k=mf.get_jk(dm=dm_spin)
-        electronic=np.trace((mf.get_hcore()+.5*j.sum(axis=0))@dm)
-        electronic-=.5*sum(np.trace(ks@ds) for ks,ds in zip(k,dm_spin))
-        exchange=sum(np.trace(d@ds@d@ds) for ds in dm_spin)
-    else:
-        j,k=mf.get_jk(dm=dm)
-        electronic=np.einsum("ij,ji->",mf.get_hcore()+.5*j-.25*k,dm)
-        exchange=.5*np.trace(d@dm@d@dm)
-    electronic+=mol.energy_nuc()
-    dse=.5*coupling**2*(np.trace(r2@dm)-exchange)
-    return float(electronic+dse)
-
+from cavity_hf_reference import hf_expectation
 
 def main(root):
     root=Path(root).resolve(); root.mkdir(parents=True,exist_ok=True)

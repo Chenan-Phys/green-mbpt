@@ -45,9 +45,12 @@ ionic charges determines the reported coherent displacement.
 ## Energy estimator: derivation to validate
 
 Let `chi = P + P W P` in auxiliary space, including the coupling-scaled dipole vertex.
+Here `P`/`chi` use the negative density-response convention, and the bosonic
+Green function is `D(tau)=-<T q(tau) q(0)>_connected`, with `q=b+b†`.
 The connected photon correction is
 
 `delta D(i nu) = 2*omega^3*chi_ph,ph(i nu)/(nu^2+omega^2)^2`.
+The connected coordinate variance is `1+2*n_B-delta D(tau=0)`.
 
 Relative to the native electronic Galitskii–Migdal estimator, the proposed correction is
 
@@ -117,3 +120,72 @@ Application repositories are [TTF-TCNE](https://github.com/Chenan-Phys/green-qed
 and [Na20](https://github.com/Chenan-Phys/green-qed-na20). Beta 1000 Ha^-1 is a
 finite-temperature pilot; sodium energy differences need spin and low-temperature
 checks. An internal-energy difference is not automatically a free-energy difference.
+
+The acceptance check also requires an unnormalized overlap-weighted density
+residual below 1e-6 electron and agreement of the reported static HF energy with
+an independent same-factor PySCF evaluation below 1e-7 Ha. This check applies
+to the HF component of GW as well. A sodium cation DIIS run passed successive
+energy/density changes but failed the functional-energy check by 1.1e-5 Ha;
+it is excluded from charging differences and is being polished. Linear
+self-energy mixing stabilizes the initial TTF GW control after DIIS oscillation.
+Mixing type/weight are explicit runner/campaign options. Each case has a
+nonblocking file lock plus a check for legacy native writers in its directory.
+The serial queue checks memory and free disk space before starting a case.
+It retains the existing checkpoint histories.
+Its disk check reserves the full bounded 120-iteration G/self-energy history
+with 25% overhead and a 2 GiB margin, in addition to 60 GiB remaining free;
+the time-grid size is read from the installed grid. An insufficient-space
+result stops the campaign before launching another case.
+
+`cavity_thermal_hf.py` independently solves the finite-temperature coherent
+HF equations with the same saved factors, reporting entropy, internal energy,
+free-energy functional, spin counts and a Fock/density commutator. It bypasses
+the one-electron shortcut and builds full custom potentials to avoid retaining
+an earlier cavity correction in incremental updates. The one-electron H2+
+reference passes; the initial Na20 cation reference does not converge and is
+recorded as failed rather than substituted for a native result.
+
+### Density convergence, initial guesses and basis controls
+
+The current native build adds the physical density criterion directly to the
+SC loop: the unnormalized Frobenius norm of `S^1/2 delta_gamma_spin S^1/2`
+must be below 1e-6 electron, together with the energy and bosonic criteria.
+The first iteration cannot pass this density criterion. Restricted densities
+include their factor of two. The new install prefix is
+`$HOME/green/install-qed/cavity-general-density`; its build manifest records
+the executable hash and six LF-normalized core-source hashes. Runners reject
+an executable/current-core mismatch. Earlier results retain their earlier
+binary and source hashes. The rebuilt solver passes 26/26 native regressions
+and the charged H2 benchmarks.
+
+`cavity_warm_start.py` preserves the source solution and seeds a fresh target
+coupling point with its last two GW iterations. The system, basis representation,
+mode and spin sector must match; the target has its own Hamiltonian and must
+converge independently. Its charged H2 test agrees with an independent cold
+solution within 9.4e-11 Ha. `cavity_hf_warm_start.py` instead prepares a fresh
+input using an accepted independent HF starting Fock, with physical operators
+and factors unchanged; it passes the H2 check.
+
+`cavity_lowdin.py SOURCE TARGET` makes a fresh full symmetric `S^-1/2`
+representation, transforming H, S, the starting Fock, dipole, actual second
+moment and every Coulomb factor together. It discards no basis functions.
+Original AO factors and `native_to_ao` remain available for independent energy
+evaluation and real-space densities. The analyzer saves physical AO density
+and uses the original symmetric Lowdin populations. Cold transformed H2 HF/GW
+energies agree within 1.2e-15 Ha, and AO densities within 2.7e-15. This is a
+conditioning control, not a change of electronic basis or a cure for soft
+orbital modes. Use the original physical specification JSON with the prepared
+converted directory; the exporter rejects a misleading `native_basis=lowdin`
+request without an actual conversion.
+
+Thermal HF references report an overlap-invariant Fock/density commutator.
+Their default orbital gradient tolerance is 1e-7 Ha; an explicit pilot setting
+up to 1e-6 Ha is available and recorded, while the commutator gate remains
+1e-6 Ha. Native energy/density acceptance is still required after using a
+reference as a starting guess. A fixed mean spin sector does not imply spin purity.
+
+The exact H2 photon-moment test has converged at cutoffs 8/16. Its induced
+connected coordinate variance is 3.4518e-5 versus 2.1448e-5 in GW: about 38%
+smaller in GW, despite the closer energy shift. This compares fitted GW with
+unfitted finite CI. `Photon_energy_correction` means `E_photon+E_bilinear/2`,
+and must not be interpreted as photon occupation energy.

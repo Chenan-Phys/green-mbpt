@@ -48,6 +48,8 @@ class ChargedMolecularExporter(pyscf_mol_init):
 
 
 def prepare(spec, directory):
+    if spec.get("native_basis","ao")!="ao":
+        raise ValueError("Export the AO input, then use cavity_lowdin.py for a verified full-basis conversion")
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     if (directory / "input.h5").exists():

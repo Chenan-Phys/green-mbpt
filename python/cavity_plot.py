@@ -9,19 +9,25 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 parser=argparse.ArgumentParser(); parser.add_argument("full"); parser.add_argument("minimal"); parser.add_argument("output")
+parser.add_argument("--matched-aux")
 args=parser.parse_args()
 if socket.gethostname().split(".")[0]!="kadanoff": raise RuntimeError("Workstation only")
 full=json.loads(Path(args.full).read_text())["cases"]
 minimal=json.loads(Path(args.minimal).read_text())["cases"]
 energy=[]; charge=[]
-for cases,label in [(full,"R4"),(full,"R8"),(minimal,"R4")]:
+entries=[(full,"R4"),(full,"R8"),(minimal,"R4")]
+labels=["def2-SVP/default\n4 Å","def2-SVP/default\n8 Å","STO-3G/Weigend\n4 Å"]
+colors=["#266b86","#6399a4","#b2783a"]
+if args.matched_aux:
+    entries.append((json.loads(Path(args.matched_aux).read_text())["cases"],"R4"))
+    labels.append("STO-3G/default\n4 Å")
+    colors.append("#865946")
+for cases,label in entries:
     zero=cases[f"{label}_lambda0"]["methods"]["HF"]
     plus=cases[f"{label}_lambda0.005"]["methods"]["HF"]
     energy.append((plus["energy_hartree"]-zero["energy_hartree"])*27211.386245988)
     charge.append((sum(plus["population_by_atom"][14:])-sum(zero["population_by_atom"][14:]))*1e5)
-labels=["def2-SVP\n4 Å","def2-SVP\n8 Å","STO-3G/Weigend\n4 Å"]
-fig,axes=plt.subplots(1,2,figsize=(10,4.2),layout="constrained")
-colors=["#266b86","#6399a4","#b2783a"]
+fig,axes=plt.subplots(1,2,figsize=(12,4.2),layout="constrained")
 axes[0].bar(labels,energy,color=colors)
 axes[0].set_ylabel("Cavity HF total-energy shift (meV)")
 for i,value in enumerate(energy): axes[0].text(i,value+.35,f"{value:.3f}",ha="center")

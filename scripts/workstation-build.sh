@@ -5,7 +5,7 @@ unset PYTHONPATH
 export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 source_dir="$HOME/green/qed-research"
 build_dir=/data/cwei/green_runs/qed-validation/build
-prefix="$HOME/green/install-qed/cavity-general"
+prefix="$HOME/green/install-qed/cavity-general-density"
 mkdir -p "$build_dir"
 args=(-S "$source_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release
       -DCMAKE_INSTALL_PREFIX="$prefix" -DCUSTOM_KERNELS= -DBuild_Tests=ON)
@@ -19,4 +19,5 @@ done
 cmake "${args[@]}"
 cmake --build "$build_dir" -j 2
 cmake --install "$build_dir"
+python "$source_dir/python/cavity_build_manifest.py" "$prefix"
 "$prefix/bin/mbpt.exe" --version

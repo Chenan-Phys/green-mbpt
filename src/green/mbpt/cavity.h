@@ -5,6 +5,7 @@
 #include <cmath>
 #include <array>
 #include <limits>
+#include <vector>
 #include <green/h5pp/archive.h>
 #include "common_defs.h"
 
@@ -16,6 +17,8 @@ namespace green::mbpt::cavity {
     double omega = 0.0, lambda = 0.0, nuclear_dipole = 0.0;
     double photon_energy_correction = 0.0, photon_variance = 1.0;
     double coherent_b = 0.0, bosonic_residual = 0.0;
+    double density_residual = 0.0, energy_threshold = 0.0;
+    std::vector<MatrixXcd> overlap_roots, previous_density;
     MatrixXcd dipole, second_moment;
     ztensor<4> chi_w, photon_delta_w;
   };
@@ -54,6 +57,7 @@ namespace green::mbpt::cavity {
         (state.second_moment-state.second_moment.adjoint()).norm() > 1e-10)
       throw std::invalid_argument("Nonfinite, non-Hermitian or invalid QED parameters");
     state.enabled = true;
+    state.energy_threshold=p["E_thr"];
     if (ar.has_group("QED/fixed_spin")) {
       dtensor<1> targets;
       ar["QED/fixed_spin/target"] >> targets;
@@ -105,6 +109,34 @@ namespace green::mbpt::cavity {
     return value;
   }
 
+  inline double density_convergence(const ztensor<5>& g, const ztensor<4>& overlap) {
+    if (!state.enabled) return 0.0;
+    const size_t ns=g.shape()[1], last=g.shape()[0]-1;
+    if (state.overlap_roots.empty()) {
+      for (size_t s=0;s<ns;++s) {
+        Eigen::SelfAdjointEigenSolver<MatrixXcd> solver(matrix(overlap(s,0)));
+        if (solver.info()!=Eigen::Success || solver.eigenvalues().minCoeff()<=0)
+          throw std::invalid_argument("Nonpositive molecular overlap in QED density check");
+        state.overlap_roots.push_back(solver.eigenvectors()*
+          solver.eigenvalues().cwiseSqrt().asDiagonal()*solver.eigenvectors().adjoint());
+      }
+    }
+    std::vector<MatrixXcd> current;
+    double squared=0.0;
+    for (size_t s=0;s<ns;++s) {
+      current.push_back(-(ns==1 ? 2.0 : 1.0)*matrix(g(last,s,0)));
+      if (!state.previous_density.empty()) {
+        const auto& root=state.overlap_roots[s];
+        squared+=(root*(current[s]-state.previous_density[s])*root).squaredNorm();
+      }
+    }
+    state.density_residual=state.previous_density.empty() ? 1.0 : std::sqrt(squared);
+    state.previous_density=std::move(current);
+    // SC uses an energy-unit threshold. Scale the electron-unit residual so
+    // both criteria pass only below their own tolerances (density: 1e-6).
+    return state.energy_threshold*state.density_residual/1e-6;
+  }
+
   inline void dump(h5pp::archive& ar, const std::string& prefix, double total) {
     if (!state.enabled) return;
     ar[prefix+"/Energy_total_QED"] << total;
@@ -112,6 +144,7 @@ namespace green::mbpt::cavity {
     ar[prefix+"/QED/Photon_variance"] << state.photon_variance;
     ar[prefix+"/QED/Coherent_b"] << state.coherent_b;
     ar[prefix+"/QED/Bosonic_residual"] << state.bosonic_residual;
+    ar[prefix+"/QED/Density_residual_frobenius"] << state.density_residual;
     ar["QED/omega_hartree"] << state.omega;
     ar["QED/lambda_au"] << state.lambda;
     if (state.fixed_spin) {

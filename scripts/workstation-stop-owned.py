@@ -20,7 +20,9 @@ if args.directory:
     root=Path("/data/cwei/green_runs").resolve()
     if not expected.is_relative_to(root): raise RuntimeError("Case is outside task data root")
     if str((proc/"cwd").resolve())!=str(expected): raise RuntimeError("PID belongs to another case")
-    if "green/install-qed/cavity-general/bin/mbpt.exe" not in command: raise RuntimeError("Unexpected executable")
+    executable=command.split()[0]
+    if "/green/install-qed/cavity-general" not in executable or not executable.endswith("/bin/mbpt.exe"):
+        raise RuntimeError("Unexpected executable")
 else:
     allowed=[str(Path.home()/"green/cavity-applications")+"/",
              str(Path.home()/"green/qed-research/python/cavity_run.py"),

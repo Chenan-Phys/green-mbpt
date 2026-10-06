@@ -17,8 +17,8 @@ def collect(root):
         if not proc.name.isdigit(): continue
         try:
             command=(proc/"cmdline").read_bytes()
-            if b"install-qed/cavity-general/bin/mbpt.exe" in command:
-                arguments=command.split(b"\0")
+            arguments=command.split(b"\0")
+            if b"/green/install-qed/cavity-general" in arguments[0] and arguments[0].endswith(b"/bin/mbpt.exe"):
                 method=arguments[arguments.index(b"--scf_type")+1].decode()
                 running[(str((proc/"cwd").resolve()),method)]=int(proc.name)
         except (FileNotFoundError,PermissionError,ProcessLookupError): pass
@@ -32,10 +32,13 @@ def collect(root):
             progress={"status":"not_started"}
             if log.exists():
                 content=log.read_text(errors="replace")
+                content=content.rsplit("CAVITY RUN START",1)[-1]
                 starts=[line for line in content.splitlines() if "Starting iteration" in line]
                 progress.update(last_iteration_message=starts[-1] if starts else "initializing")
-                progress["status"]=("converged" if "Simulation Converged" in content else
-                    "iteration_limit" if "Reached Maximum number" in content else "unfinished")
+                convergence=content.rfind("Simulation Converged")
+                limit=content.rfind("Reached Maximum number")
+                progress["status"]=("converged" if convergence>limit else
+                    "iteration_limit" if limit>=0 else "unfinished")
             if (str(directory),method) in running:
                 progress.update(status="running",pid=running[(str(directory),method)])
             if saved.exists():
