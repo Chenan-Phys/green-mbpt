@@ -82,3 +82,30 @@ independent finite electron–photon diagonalization, even coupling parity, grid
 convergence, charge counts, and origin sensitivity. Internal bubble screening is not
 automatically a physical optical response. Gauge/origin sensitivity of an approximate
 bare-vertex screening treatment must be measured, not assumed absent.
+
+### Results obtained on 2026-10-06
+
+The optimized build passes 26/26 native tests. H2/STO-3G at 0.74 Angstrom,
+omega 2 eV and lambda 0.005 au gives a GW cavity energy shift about 0.55257 meV,
+compared with 0.53557 meV from finite electron-photon CI. Photon cutoffs 8/16
+agree within 1e-9 Ha. The independent coherent HF expectation agrees at numerical
+precision. Coupling parity and zero-coupling recovery pass. H2+/H2- checks recover
+the expected spin occupations and validate the unrestricted HF energy estimator.
+
+**Unresolved:** shifting the dipole origin by 1 Angstrom changes the H2 GW
+energy by 1.0718e-6 Ha (0.02917 meV), while HF is invariant. This is appreciable
+relative to the benchmark cavity signal. Origin/number-response and vertex
+analysis must precede physical interpretation of small application GW shifts.
+These results qualify an experimental implementation, not a production release.
+
+`cavity_run.py` records input, binary, core-source and BLAS-runtime hashes;
+explicit checkpoint restarts preserve existing HDF5 data. It defaults to a
+1e-8 Ha pilot threshold, with tighter tolerances available. The installed
+pthread LP64 OpenBLAS variant is used only for the native child process;
+the default system BLAS is single threaded. `cavity_collect.py` exports compact
+manifests and per-method statuses. Scientific scripts must run on GREEN_workstation.
+
+Application repositories are [TTF-TCNE](https://github.com/Chenan-Phys/green-qed-ttf-tcne)
+and [Na20](https://github.com/Chenan-Phys/green-qed-na20). Beta 1000 Ha^-1 is a
+finite-temperature pilot; sodium energy differences need spin and low-temperature
+checks. An internal-energy difference is not automatically a free-energy difference.

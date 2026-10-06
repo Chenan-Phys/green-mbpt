@@ -52,16 +52,26 @@ def exact_reference(directory, coupling, cutoff):
 
 def hf_expectation(directory):
     mol=gto.loads((directory/"molecule.json").read_text())
-    mf=scf.RHF(mol).density_fit()
+    mf=(scf.UHF(mol) if mol.spin else scf.RHF(mol)).density_fit()
     mf.with_df._cderi=str(directory/"cderi_mol.h5")
     with h5py.File(directory/"hf.h5") as f, h5py.File(directory/"input.h5") as inp:
         iteration=max(int(k[4:]) for k in f if k.startswith("iter") and k[4:].isdigit())
-        dm=-2*complex_array(f[f"iter{iteration}/G_tau/data"])[-1,0,0].real
+        g=complex_array(f[f"iter{iteration}/G_tau/data"])
+        dm_spin=-g[-1,:,0].real
+        dm=2*dm_spin[0] if g.shape[1]==1 else dm_spin.sum(axis=0)
         d=np.asarray(inp["QED/dipole"]); r2=np.asarray(inp["QED/second_moment"])
         coupling=float(inp["QED/lambda_au"][()])
-    j,k=mf.get_jk(dm=dm)
-    electronic=np.einsum("ij,ji->",mf.get_hcore()+.5*j-.25*k,dm)+mol.energy_nuc()
-    dse=.5*coupling**2*(np.trace(r2@dm)-.5*np.trace(d@dm@d@dm))
+    if mol.spin:
+        j,k=mf.get_jk(dm=dm_spin)
+        electronic=np.trace((mf.get_hcore()+.5*j.sum(axis=0))@dm)
+        electronic-=.5*sum(np.trace(ks@ds) for ks,ds in zip(k,dm_spin))
+        exchange=sum(np.trace(d@ds@d@ds) for ds in dm_spin)
+    else:
+        j,k=mf.get_jk(dm=dm)
+        electronic=np.einsum("ij,ji->",mf.get_hcore()+.5*j-.25*k,dm)
+        exchange=.5*np.trace(d@dm@d@dm)
+    electronic+=mol.energy_nuc()
+    dse=.5*coupling**2*(np.trace(r2@dm)-exchange)
     return float(electronic+dse)
 
 
@@ -76,7 +86,7 @@ def main(root):
               "lambda_au":coupling,"origin_angstrom":origin,"polarization":[0,0,1]}
         path=specs/f"{label}.json"; path.write_text(json.dumps(spec,indent=2)+"\n")
         directory=root/label
-        results=run(path,directory)
+        results=run(path,directory,energy_threshold=1e-10)
         results["independent_hf_energy"]=hf_expectation(directory)
         results["hf_expectation_error"]=abs(results["HF"]["energy_hartree"]-results["independent_hf_energy"])
         results["exact_cut8"]=exact_reference(directory,coupling,8)

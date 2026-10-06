@@ -27,6 +27,25 @@ class ChargedMolecularExporter(pyscf_mol_init):
                     verbose=4, max_memory=int(os.environ.get("PYSCF_MAX_MEMORY", "4000")))
         return mol
 
+    def mf_object(self, mydf=None):
+        if self.args.auxbasis is None:
+            return super().mf_object(mydf)
+        # Stable solve_mol_mean_field ignores its mydf/auxbasis argument. Its
+        # cached factors then disagree with the exporter's selected NQ. Keep
+        # this correction in the adapter; do not modify the installed package.
+        if self.args.x2c != 0 or self.args.xc is not None:
+            raise NotImplementedError("Explicit auxiliary basis currently supports scalar HF")
+        mf=self.args.mean_field(self.cell).density_fit(auxbasis=self.args.auxbasis)
+        mf.with_df._cderi_to_save="cderi_mol.h5"
+        mf.with_df.build()
+        mf.diis_space=16
+        mf.damp=self.args.damping
+        mf.max_cycle=self.args.max_iter
+        mf.chkfile="tmp.chk"
+        mf.kernel()
+        mf.analyze()
+        return mf
+
 
 def prepare(spec, directory):
     directory = Path(directory).resolve()
@@ -44,6 +63,8 @@ def prepare(spec, directory):
             "--memory", "500", "--keep_cderi", "true", "--max_iter", "150"]
     if spec.get("ecp"):
         argv += ["--ecp", spec["ecp"]]
+    if spec.get("auxbasis"):
+        argv += ["--auxbasis", spec["auxbasis"]]
     args = common_utils.init_mol_params(argv)
     previous = Path.cwd()
     try:

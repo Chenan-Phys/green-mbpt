@@ -38,10 +38,15 @@ def analyze(directory, result="sim.h5"):
         energy = float(last["Energy_HF"][()])+float(last["Energy_2b"][()])
         out = {"iteration": iteration, "energy_hartree": energy, "nelectron": ne,
                "expected_nelectron": spec["nelectron"],
-               "spin_electrons": [(np.trace(x@overlap).real*(2 if ns==1 else 1)) for x in dm_spin],
+               "spin_electrons": ([float(np.trace(dm_spin[0]@overlap).real)]*2 if ns==1 else
+                                  [float(np.trace(x@overlap).real) for x in dm_spin]),
                "dipole_projected_au": float(inp["QED/nuclear_dipole"][()])+np.trace(d@dm).real,
                "population_by_atom": [], "omega_ev": spec.get("omega_ev", 2.0),
                "lambda_au": spec.get("lambda_au", 0.0)}
+        expected_spin=sorted([(spec["nelectron"]+spec.get("spin",0))/2,
+                              (spec["nelectron"]-spec.get("spin",0))/2])
+        out["spin_sector_error"]=float(np.max(np.abs(np.array(sorted(out["spin_electrons"]))-expected_spin)))
+        out["accepted_for_requested_spin_sector"]=out["spin_sector_error"]<1e-5
         ao_atoms = np.asarray(inp["QED/ao_atom_index"])
         out["population_by_atom"] = [float(np.diag(orth_dm)[ao_atoms==i].real.sum())
                                       for i in range(len(spec["atoms"]))]
@@ -52,9 +57,11 @@ def analyze(directory, result="sim.h5"):
             prev = f[f"iter{iteration-1}"]
             ep = float(prev["Energy_HF"][()])+float(prev["Energy_2b"][()])
             out["last_energy_change_hartree"] = abs(energy-ep)
+            out["native_energy_residual"] = sum(abs(float(last[k][()])-float(prev[k][()]))
+                for k in ("Energy_1b", "Energy_HF", "Energy_2b"))
         out["accepted_numerically"] = (abs(ne-spec["nelectron"]) < 1e-6 and
-             out.get("last_energy_change_hartree", float("inf")) < 1e-8 and
-             out.get("Bosonic_residual", 0.0) < 1e-7)
+             out.get("native_energy_residual", float("inf")) < 1e-8 and
+             out.get("Bosonic_residual", 0.0) < 1e-8)
     np.save(directory/"density_ao.npy", dm)
     (directory/"analysis.json").write_text(json.dumps(out, indent=2)+"\n")
     return out
