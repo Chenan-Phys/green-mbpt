@@ -45,4 +45,6 @@ for ax in axes:
 output=Path(args.output); output.parent.mkdir(parents=True,exist_ok=True)
 fig.savefig(output,dpi=180)
 fig.savefig(output.with_suffix(".svg"))
+svg=output.with_suffix(".svg")
+svg.write_text("\n".join(line.rstrip() for line in svg.read_text().splitlines())+"\n")
 print(output)
