@@ -56,9 +56,9 @@ def hf_expectation(directory):
     mf.with_df._cderi=str(directory/"cderi_mol.h5")
     with h5py.File(directory/"hf.h5") as f, h5py.File(directory/"input.h5") as inp:
         iteration=max(int(k[4:]) for k in f if k.startswith("iter") and k[4:].isdigit())
-        g=complex_array(f[f"iter{iteration}/G_tau/data"])
-        dm_spin=-g[-1,:,0].real
-        dm=2*dm_spin[0] if g.shape[1]==1 else dm_spin.sum(axis=0)
+        end=complex_array(f[f"iter{iteration}/G_tau/data"][-1])
+        dm_spin=-end[:,0].real
+        dm=2*dm_spin[0] if end.shape[0]==1 else dm_spin.sum(axis=0)
         d=np.asarray(inp["QED/dipole"]); r2=np.asarray(inp["QED/second_moment"])
         coupling=float(inp["QED/lambda_au"][()])
     if mol.spin:

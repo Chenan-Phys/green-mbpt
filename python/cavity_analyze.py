@@ -23,9 +23,9 @@ def analyze(directory, result="sim.h5"):
     with h5py.File(directory/result) as f, h5py.File(directory/"input.h5") as inp:
         iteration = max(int(k[4:]) for k in f if k.startswith("iter") and k[4:].isdigit())
         last = f[f"iter{iteration}"]
-        g = complex_array(last["G_tau/data"])
-        ns = g.shape[1]
-        dm_spin = -g[-1, :, 0]
+        end = complex_array(last["G_tau/data"][-1])
+        ns = end.shape[0]
+        dm_spin = -end[:, 0]
         dm = dm_spin.sum(axis=0)*(2 if ns == 1 else 1)
         overlap = complex_array(inp["HF/S-k"])[0, 0]
         ne = np.trace(dm@overlap).real
@@ -62,8 +62,13 @@ def analyze(directory, result="sim.h5"):
             out["last_energy_change_hartree"] = abs(energy-ep)
             out["native_energy_residual"] = sum(abs(float(last[k][()])-float(prev[k][()]))
                 for k in ("Energy_1b", "Energy_HF", "Energy_2b"))
+            old_spin=-complex_array(prev["G_tau/data"][-1])[:,0]
+            weight=2 if ns==1 else 1
+            out["density_residual_frobenius_electrons"]=float(np.sqrt(sum(
+                np.linalg.norm(root@(weight*(x-y))@root)**2 for x,y in zip(dm_spin,old_spin))))
         out["accepted_numerically"] = (abs(ne-spec["nelectron"]) < 1e-6 and
              out.get("native_energy_residual", float("inf")) < 1e-8 and
+             out.get("density_residual_frobenius_electrons", float("inf")) < 1e-6 and
              out.get("Bosonic_residual", 0.0) < 1e-8)
         if spec.get("fix_spin",False):
             out["accepted_numerically"] &= out["accepted_for_requested_spin_sector"]
