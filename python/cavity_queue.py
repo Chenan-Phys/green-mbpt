@@ -83,7 +83,8 @@ def main(campaign_path):
                            restart_unconverged=True,native_threads=entry.get("threads",8),
                            mixing_type=entry.get("mixing_type","SIGMA_MIXING"),
                            mixing_weight=entry.get("mixing_weight",.35),
-                           number_tolerance=entry.get("number_tolerance",1e-13))
+                           number_tolerance=entry.get("number_tolerance",1e-13),
+                           const_density=entry.get("const_density",True))
                 status["cases"][name].update(status="completed",result=result)
             except Exception as error:
                 status["cases"][name].update(status="failed",error=str(error))

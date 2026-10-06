@@ -28,7 +28,7 @@ def analyze(directory, result="sim.h5"):
         dm_spin = -end[:, 0]
         dm = dm_spin.sum(axis=0)*(2 if ns == 1 else 1)
         overlap = complex_array(inp["HF/S-k"])[0, 0]
-        ne = np.trace(dm@overlap).real
+        ne = float(np.trace(dm@overlap).real)
         ev, vectors = eigh(overlap)
         if ev[0] <= 0:
             raise ValueError("Nonpositive overlap")
@@ -40,7 +40,7 @@ def analyze(directory, result="sim.h5"):
                "expected_nelectron": spec["nelectron"],
                "spin_electrons": ([float(np.trace(dm_spin[0]@overlap).real)]*2 if ns==1 else
                                   [float(np.trace(x@overlap).real) for x in dm_spin]),
-               "dipole_projected_au": float(inp["QED/nuclear_dipole"][()])+np.trace(d@dm).real,
+               "dipole_projected_au": float(inp["QED/nuclear_dipole"][()])+float(np.trace(d@dm).real),
                "population_by_atom": [], "omega_ev": spec.get("omega_ev", 2.0),
                "lambda_au": spec.get("lambda_au", 0.0)}
         expected_spin=sorted([(spec["nelectron"]+spec.get("spin",0))/2,
@@ -95,7 +95,8 @@ def analyze(directory, result="sim.h5"):
         reported_hf=float(f[f"iter{iteration}/Energy_HF"][()])
     out["hf_functional_consistency_error_hartree"]=abs(reported_hf-
                                                      out["hf_functional_energy_hartree"])
-    out["accepted_numerically"] &= out["hf_functional_consistency_error_hartree"]<1e-7
+    out["accepted_numerically"] = bool(out["accepted_numerically"] and
+                                     out["hf_functional_consistency_error_hartree"]<1e-7)
     (directory/"analysis.json").write_text(json.dumps(out, indent=2)+"\n")
     return out
 

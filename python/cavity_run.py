@@ -34,7 +34,7 @@ def provenance(directory, executable):
 
 def _run(spec_path, directory, beta=1000., methods=("HF","GW"), restart_unconverged=False,
         energy_threshold=1e-8, native_threads=4, force_restart=False, mixing_type="SIGMA_MIXING",
-        mixing_weight=.5,number_tolerance=1e-12):
+        mixing_weight=.5,number_tolerance=1e-12,const_density=True):
     if socket.gethostname().split(".")[0] != "kadanoff":
         raise RuntimeError("Scientific calculations must run on GREEN_workstation")
     if native_threads < 1 or not 0 < energy_threshold <= 1e-8:
@@ -48,6 +48,8 @@ def _run(spec_path, directory, beta=1000., methods=("HF","GW"), restart_unconver
     directory=Path(directory).resolve()
     directory.mkdir(parents=True,exist_ok=True)
     spec=json.loads(Path(spec_path).read_text())
+    if not const_density and spec.get("fix_spin",False):
+        raise ValueError("Fixed spin populations require chemical-potential searches")
     if not (directory/"input.h5").exists():
         with (directory/"prepare.log").open("w") as log:
             # Keep PySCF's C-level and Python-level verbose output in the case log.
@@ -79,15 +81,21 @@ def _run(spec_path, directory, beta=1000., methods=("HF","GW"), restart_unconver
                                  command=stamp["command"])
                 if value.get("beta_hartree_inverse",beta)!=beta:
                     raise RuntimeError("Cached result has a different temperature")
+                old_constant=value.get("provenance",{}).get("const_density",True)
+                if old_constant!=const_density:
+                    raise RuntimeError("Cached ensemble differs; request an explicit restart")
                 results[method]=value
                 saved.write_text(json.dumps(value,indent=2)+"\n")
                 continue
             if not (restart_unconverged or force_restart):
                 raise RuntimeError(f"Existing {method} run is unconverged; inspect before restarting")
             restart=True
+        if not const_density and not restart:
+            raise ValueError("Fixed chemical potential requires a previously initialized checkpoint")
         command=[str(executable),"--scf_type",method,"--kernel","CPU",
                  "--BETA",str(beta),"--grid_file",str(grid),"--itermax","120",
                  "--E_thr",str(energy_threshold),"--tolerance",str(number_tolerance),
+                 "--const_density",str(const_density).lower(),
                  "--mixing_type",mixing_type,"--mixing_weight",str(mixing_weight),
                  "--results_file",result,"--diis_file",f"{method.lower()}_diis.h5"]
         if restart:
@@ -95,7 +103,9 @@ def _run(spec_path, directory, beta=1000., methods=("HF","GW"), restart_unconver
         # A finite molecule has one Coulomb set; no periodic Ewald correction set.
         command += ["--dfintegral_file","df_hf_int"]
         stamp=provenance(directory,executable)
-        stamp.update(beta_hartree_inverse=beta, command=command, native_threads=native_threads)
+        stamp.update(beta_hartree_inverse=beta, command=command, native_threads=native_threads,
+                     const_density=const_density,
+                     ensemble="target mean particle number" if const_density else "fixed checkpoint chemical potential; particle number checked after convergence")
         # Fedora's default libopenblas is SINGLE_THREADED on this workstation.
         # Preload its installed LP64 pthread variant for this child process only.
         threaded_blas=Path("/usr/lib64/libopenblasp.so.0")
@@ -154,10 +164,10 @@ def case_guard(directory):
 
 def run(spec_path, directory, beta=1000., methods=("HF","GW"), restart_unconverged=False,
         energy_threshold=1e-8, native_threads=4, force_restart=False, mixing_type="SIGMA_MIXING",
-        mixing_weight=.5,number_tolerance=1e-12):
+        mixing_weight=.5,number_tolerance=1e-12,const_density=True):
     with case_guard(directory) as directory:
         return _run(spec_path,directory,beta,methods,restart_unconverged,energy_threshold,
-                    native_threads,force_restart,mixing_type,mixing_weight,number_tolerance)
+                    native_threads,force_restart,mixing_type,mixing_weight,number_tolerance,const_density)
 
 
 if __name__=="__main__":
@@ -173,7 +183,10 @@ if __name__=="__main__":
     parser.add_argument("--mixing-type",choices=["SIGMA_MIXING","DIIS"],default="SIGMA_MIXING")
     parser.add_argument("--mixing-weight",type=float,default=.5)
     parser.add_argument("--number-tolerance",type=float,default=1e-12)
+    parser.add_argument("--fixed-chemical-potential",action="store_true",
+                        help="Freeze the initialized checkpoint mu; requires restart and subsequent particle-number acceptance")
     args=parser.parse_args()
     print(json.dumps(run(args.spec,args.directory,args.beta,args.methods,
                          args.restart_unconverged,args.energy_threshold,args.native_threads,args.force_restart,
-                         args.mixing_type,args.mixing_weight,args.number_tolerance),indent=2))
+                         args.mixing_type,args.mixing_weight,args.number_tolerance,
+                         not args.fixed_chemical_potential),indent=2))

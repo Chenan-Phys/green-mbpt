@@ -26,6 +26,14 @@ def packed_like(value, dataset):
     return out
 
 
+def hermitian_roundoff(value):
+    """Remove transformation roundoff only; refuse appreciable asymmetry."""
+    adjoint=np.swapaxes(value.conj(),-1,-2)
+    if np.linalg.norm(value-adjoint)>1e-10*max(1.,np.linalg.norm(value)):
+        raise ValueError("Operator has more than Hermitian transformation roundoff")
+    return .5*(value+adjoint)
+
+
 def transform(source,target):
     if socket.gethostname().split(".")[0]!="kadanoff": raise RuntimeError("Workstation only")
     source=Path(source).resolve(); target=Path(target).resolve()
@@ -56,11 +64,12 @@ def transform(source,target):
             for name in ("dipole","second_moment"):
                 original=np.asarray(q[name])
                 q["original_"+name]=original
-                q[name][...]=(x.conj().T@original@x).real
+                q[name][...]=hermitian_roundoff(x.conj().T@original@x).real
             for name in ("HF/H-k","HF/Fock-k","HF/S-k"):
                 ds=inp[name]
                 value=complex_array(ds)
                 value=np.matmul(x.conj().T,np.matmul(value,x))
+                value=hermitian_roundoff(value)
                 if name=="HF/S-k": value[...]=np.eye(n)
                 ds[...]=packed_like(value,ds)
         # Native VQ uses flattened real/imaginary storage on its last axis.
@@ -82,6 +91,7 @@ def transform(source,target):
                             raw=np.asarray(ds[k,start:stop]).reshape(-1,n,n,2)
                             value=raw[...,0]+1j*raw[...,1]
                             value=np.matmul(x.conj().T,np.matmul(value,x))
+                            value=hermitian_roundoff(value)
                             raw[...,0]=value.real; raw[...,1]=value.imag
                             ds[k,start:stop]=raw.reshape(stop-start,n,2*n)
         # A separately transformed PySCF cache permits thermal HF in this same
@@ -98,6 +108,7 @@ def transform(source,target):
                         stop=min(start+32,obj.shape[0])
                         v=lib.unpack_tril(np.asarray(obj[start:stop]))
                         v=np.matmul(x.conj().T,np.matmul(v,x))
+                        v=hermitian_roundoff(v)
                         if np.max(np.abs(v.imag))>1e-10: raise ValueError("Expected real scalar molecular factors")
                         ds[start:stop]=lib.pack_tril(v.real)
                     for key,value in obj.attrs.items(): ds.attrs[key]=value

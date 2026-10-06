@@ -189,3 +189,29 @@ connected coordinate variance is 3.4518e-5 versus 2.1448e-5 in GW: about 38%
 smaller in GW, despite the closer energy shift. This compares fitted GW with
 unfitted finite CI. `Photon_energy_correction` means `E_photon+E_bilinear/2`,
 and must not be interpreted as photon occupation energy.
+
+### Orbital stability and chemical-potential diagnostics
+
+`cavity_hf_stability.py` checks accepted, gapped UHF references using the
+internal orbital Hessian with the PF exchange response. It records the
+PySCF -1e-5 Ha negative-eigenvalue criterion and can provide an unstable-mode
+density for a fresh relaxation. Passing this test is neither global optimality
+nor spin purity. It exposed Na8 cation saddles; successive repairs allowed all
+six native Na8 HF controls to pass. Restricted neutral states have not been
+tested for unrestricted instabilities.
+
+The exporter now explicitly Hermitizes full-basis transformed operators and
+factors after bounding their asymmetry as relative roundoff. The separate
+`cavity_hermitian_input.py` makes a fresh corrected copy with recorded input
+hashes and correction norms. This repairs a Na20 second-moment asymmetry of
+1.87e-10 without relaxing the native gate; the original input is preserved.
+
+`cavity_run.py --fixed-chemical-potential --restart-unconverged` exposes stable
+GREEN's existing constant-mu mode for initialized checkpoints. G and Sigma
+still iterate; the mean particle number must pass the unchanged postprocessing
+gate. This mode rejects fixed-spin inputs and cannot cold-start from mu=0.
+Its H2 comparison passes within 3.47e-9 Ha and 5.26e-9 in AO density. A Na8
+diagnostic converges in energy but misses N by 2.73e-5 and is excluded. Sodium
+production controls therefore retain chemical-potential searches. Provenance
+and caches distinguish these ensembles. JSON acceptance flags are normalized
+to Python booleans so rejected number checks can be saved reliably.
