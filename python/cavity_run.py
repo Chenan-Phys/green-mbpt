@@ -34,7 +34,7 @@ def provenance(directory, executable):
 
 def _run(spec_path, directory, beta=1000., methods=("HF","GW"), restart_unconverged=False,
         energy_threshold=1e-8, native_threads=4, force_restart=False, mixing_type="SIGMA_MIXING",
-        mixing_weight=.5,number_tolerance=1e-12,const_density=True):
+        mixing_weight=.5,number_tolerance=1e-12,const_density=True,grid_file=None):
     if socket.gethostname().split(".")[0] != "kadanoff":
         raise RuntimeError("Scientific calculations must run on GREEN_workstation")
     if native_threads < 1 or not 0 < energy_threshold <= 1e-8:
@@ -61,7 +61,10 @@ def _run(spec_path, directory, beta=1000., methods=("HF","GW"), restart_unconver
         if any(existing.get(k)!=v for k,v in spec.items()):
             raise RuntimeError("Existing input does not match the requested Hamiltonian")
     executable=Path.home()/"green/install-qed/cavity-general-density/bin/mbpt.exe"
-    grid=Path.home()/"green/install/share/ir/1e5.h5"
+    grid=(Path(grid_file) if grid_file else Path.home()/"green/install/share/ir/1e5.h5").resolve()
+    if not grid.is_file(): raise FileNotFoundError(grid)
+    grid_sha=hashlib.sha256(grid.read_bytes()).hexdigest()
+    current_stamp=provenance(directory,executable)
     results={}
     for method in methods:
         if method not in ("HF", "GW"):
@@ -69,25 +72,46 @@ def _run(spec_path, directory, beta=1000., methods=("HF","GW"), restart_unconver
         result=f"{method.lower()}.h5"
         restart=False
         if (directory/result).exists():
+            stamp_file=directory/f"{method.lower()}_provenance.json"
+            if not stamp_file.exists():
+                raise RuntimeError("Checkpoint has no provenance; use a fresh case")
+            old_stamp=json.loads(stamp_file.read_text())
+            if old_stamp.get("input_sha256")!=current_stamp["input_sha256"]:
+                raise RuntimeError("Input changed since the calculation checkpoint")
+            if old_stamp.get("beta_hartree_inverse")!=beta:
+                raise RuntimeError("Checkpoint has a different temperature; use a fresh case")
+            old_grid=old_stamp.get("grid_sha256")
+            if old_grid is not None and old_grid!=grid_sha:
+                raise RuntimeError("Checkpoint has a different frequency/time grid; use a fresh case")
+            if old_grid is None:
+                recorded_grid=old_stamp.get("grid_file")
+                if recorded_grid is None:
+                    old_command=old_stamp.get("command",[])
+                    if "--grid_file" in old_command:
+                        recorded_grid=old_command[old_command.index("--grid_file")+1]
+                if grid_file or not recorded_grid or Path(recorded_grid).resolve()!=grid:
+                    raise RuntimeError("Checkpoint grid cannot be verified; use a fresh case")
+            # Legacy seed records also require a native target-Hamiltonian run.
+            needs_reconvergence=bool(old_stamp.get("requires_reconvergence") or
+                                    old_stamp.get("initial_guess"))
             value=analyze(directory,result)
-            if value["accepted_numerically"] and value["native_energy_residual"]<energy_threshold and not force_restart:
+            if (value["accepted_numerically"] and value["native_energy_residual"]<energy_threshold
+                    and not force_restart and not needs_reconvergence):
+                if any(old_stamp.get(key)!=current_stamp[key] for key in
+                       ("binary_sha256","core_source_sha256_lf")):
+                    raise RuntimeError("Cached result uses a different executable/core; request an explicit restart")
                 saved=directory/f"{method.lower()}_analysis.json"
                 if saved.exists():
                     value={**json.loads(saved.read_text()), **value}
-                stamp_file=directory/f"{method.lower()}_provenance.json"
-                if stamp_file.exists():
-                    stamp=json.loads(stamp_file.read_text())
-                    value.update(provenance=stamp,beta_hartree_inverse=stamp["beta_hartree_inverse"],
-                                 command=stamp["command"])
-                if value.get("beta_hartree_inverse",beta)!=beta:
-                    raise RuntimeError("Cached result has a different temperature")
-                old_constant=value.get("provenance",{}).get("const_density",True)
+                value.update(provenance=old_stamp,beta_hartree_inverse=old_stamp["beta_hartree_inverse"],
+                             command=old_stamp["command"])
+                old_constant=old_stamp.get("const_density",True)
                 if old_constant!=const_density:
                     raise RuntimeError("Cached ensemble differs; request an explicit restart")
                 results[method]=value
                 saved.write_text(json.dumps(value,indent=2)+"\n")
                 continue
-            if not (restart_unconverged or force_restart):
+            if not (restart_unconverged or force_restart or needs_reconvergence):
                 raise RuntimeError(f"Existing {method} run is unconverged; inspect before restarting")
             restart=True
         if not const_density and not restart:
@@ -102,8 +126,9 @@ def _run(spec_path, directory, beta=1000., methods=("HF","GW"), restart_unconver
             command += ["--restart","true","--diis_restart","false"]
         # A finite molecule has one Coulomb set; no periodic Ewald correction set.
         command += ["--dfintegral_file","df_hf_int"]
-        stamp=provenance(directory,executable)
+        stamp=dict(current_stamp)
         stamp.update(beta_hartree_inverse=beta, command=command, native_threads=native_threads,
+                     grid_file=str(grid),grid_sha256=grid_sha,
                      const_density=const_density,
                      ensemble="target mean particle number" if const_density else "fixed checkpoint chemical potential; particle number checked after convergence")
         # Fedora's default libopenblas is SINGLE_THREADED on this workstation.
@@ -164,10 +189,10 @@ def case_guard(directory):
 
 def run(spec_path, directory, beta=1000., methods=("HF","GW"), restart_unconverged=False,
         energy_threshold=1e-8, native_threads=4, force_restart=False, mixing_type="SIGMA_MIXING",
-        mixing_weight=.5,number_tolerance=1e-12,const_density=True):
+        mixing_weight=.5,number_tolerance=1e-12,const_density=True,grid_file=None):
     with case_guard(directory) as directory:
         return _run(spec_path,directory,beta,methods,restart_unconverged,energy_threshold,
-                    native_threads,force_restart,mixing_type,mixing_weight,number_tolerance,const_density)
+                    native_threads,force_restart,mixing_type,mixing_weight,number_tolerance,const_density,grid_file)
 
 
 if __name__=="__main__":
@@ -183,10 +208,11 @@ if __name__=="__main__":
     parser.add_argument("--mixing-type",choices=["SIGMA_MIXING","DIIS"],default="SIGMA_MIXING")
     parser.add_argument("--mixing-weight",type=float,default=.5)
     parser.add_argument("--number-tolerance",type=float,default=1e-12)
+    parser.add_argument("--grid-file",help="Explicit IR grid for a fresh convergence control")
     parser.add_argument("--fixed-chemical-potential",action="store_true",
                         help="Freeze the initialized checkpoint mu; requires restart and subsequent particle-number acceptance")
     args=parser.parse_args()
     print(json.dumps(run(args.spec,args.directory,args.beta,args.methods,
                          args.restart_unconverged,args.energy_threshold,args.native_threads,args.force_restart,
                          args.mixing_type,args.mixing_weight,args.number_tolerance,
-                         not args.fixed_chemical_potential),indent=2))
+                         not args.fixed_chemical_potential,args.grid_file),indent=2))

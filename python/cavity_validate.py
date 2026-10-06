@@ -9,7 +9,7 @@ import sys
 
 import h5py
 import numpy as np
-from pyscf import ao2mo, fci, gto, scf
+from pyscf import ao2mo, fci, gto, scf, lib
 from scipy.linalg import eigh
 from scipy.sparse import csr_matrix, diags, eye, kron
 from scipy.sparse.linalg import eigsh
@@ -17,7 +17,7 @@ from cavity_run import run
 from cavity_analyze import complex_array
 
 
-def exact_reference(directory, coupling, cutoff, observables=False):
+def exact_reference(directory, coupling, cutoff, observables=False, use_saved_df=False):
     mol=gto.loads((directory/"molecule.json").read_text())
     norb=mol.nao_nr(); nelec=mol.nelec
     na=math.comb(norb,nelec[0]); nb=math.comb(norb,nelec[1]); dim=na*nb
@@ -32,10 +32,25 @@ def exact_reference(directory, coupling, cutoff, observables=False):
             d=np.asarray(f["QED/original_dipole"])
             r2=np.asarray(f["QED/original_second_moment"])
         omega=float(f["QED/omega_hartree"][()])
+        h_native=complex_array(f["HF/H-k"])[0,0].real
+        energy_nuc=float(f["HF/Energy_nuc"][()])
+        if "QED/native_to_ao" in f:
+            inverse=np.linalg.inv(np.asarray(f["QED/native_to_ao"]))
+            h_ao=inverse.T@h_native@inverse
+        else: h_ao=h_native
     values,vectors=eigh(s)
     x=(vectors/np.sqrt(values))@vectors.T
-    h=x.T@scf.RHF(mol).get_hcore()@x
-    eri=ao2mo.kernel(mol,x,compact=False).reshape((mol.nao_nr(),)*4)
+    h=x.T@h_ao@x
+    if use_saved_df:
+        fitting=scf.RHF(mol).density_fit().with_df
+        fitting._cderi=str(directory/"cderi_mol.h5")
+        eri=np.zeros((norb,)*4)
+        for block in fitting.loop():
+            factors=lib.unpack_tril(block)
+            factors=np.einsum("ap,Qab,bq->Qpq",x,factors,x,optimize=True)
+            eri+=np.einsum("Qpq,Qrs->pqrs",factors,factors,optimize=True)
+    else:
+        eri=ao2mo.kernel(mol,x,compact=False).reshape((mol.nao_nr(),)*4)
     h2=fci.direct_spin1.absorb_h1e(h,eri,norb,nelec,.5)
     d=x.T@d@x
     correction=x.T@r2@x-d@d
@@ -48,7 +63,7 @@ def exact_reference(directory, coupling, cutoff, observables=False):
     e0,psi=eigh(he,subset_by_index=[0,0])
     # A fixed exact coherent shift reduces cutoff error, without changing eigenvalues.
     q=q-np.eye(dim)*float(psi[:,0]@q@psi[:,0])
-    he=he+np.eye(dim)*mol.energy_nuc()+.5*coupling**2*(q@q+c)
+    he=he+np.eye(dim)*energy_nuc+.5*coupling**2*(q@q+c)
     b=diags(np.sqrt(np.arange(1,cutoff)),1,shape=(cutoff,cutoff))
     ham=kron(csr_matrix(he),eye(cutoff))+kron(eye(dim),diags(omega*np.arange(cutoff)))
     ham+=kron(csr_matrix(-np.sqrt(omega/2)*coupling*q),b+b.T)

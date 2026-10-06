@@ -225,3 +225,64 @@ requires verified gzip filters, identical diagnostics and a native restart.
 For this small validation copy only, compression may increase its size; the
 utility normally retains originals when repacking gives no size reduction.
 Inputs and integral caches are outside this utility's scope.
+
+### Analytic limits and physical readiness
+
+The 2026-10-06 workstation validation adds 28 passing analytic checks in 12
+synthetic two-orbital cases (`cavity_limits.py`): zero coupling, the analytic
+O(lambda^2) energy and connected photon-variance coefficients at three couplings,
+coupling parity, orbital rotations, the full projected second-moment correction,
+a dipole proportional to conserved particle number, a free thermal photon,
+restricted/unrestricted closed-shell equivalence, and IR grids 1e5/1e6.
+The grid energy difference is 7.34e-12 Ha. These Hamiltonians use zero electronic
+Coulomb factors and explicitly modified one-body operators; they are mathematical
+validation models, not H2 predictions. Independent HF and finite CI references
+read the saved one-body Hamiltonian and nuclear energy. The optional
+`exact_reference(..., use_saved_df=True)` reconstructs the same saved fitted
+Coulomb Hamiltonian as GREEN, avoiding an unfitted-versus-fitted comparison.
+
+`cavity_oracle.py` independently contracts a saved G with explicit NumPy tensor
+indices, solves W=(I-BP)^(-1)B directly, and checks the dynamic electronic
+self-energy and connected photon diagnostics. Four converged H2/model cases
+pass; the largest self-energy difference is 3.07e-12 Ha. Saved self-energies are
+mixed iteration quantities, so this is a converged fixed-point comparison.
+Six deliberately invalid/unsupported native inputs fail with their intended
+messages (`cavity_invalid_validate.py`). These checks supplement the previously
+passing 26 native CTests; the C++ core and executable are unchanged.
+
+The runner now verifies the current executable/build identity even when returning
+a cached result. Checkpoint input digests must match, including explicit restarts;
+temperature and grid must match. Cached core/binary identities and ensemble must
+also match. Unknown checkpoint provenance requires a fresh case. A warm-start
+record is marked `requires_reconvergence`; legacy `initial_guess` records receive
+the same treatment. Neither can be returned as a converged target without a
+native continuation, even if the lambda change is smaller than postprocessing
+tolerances. Twelve workflow regressions pass, including two actual native seed
+continuations and preservation of the source checkpoints.
+
+The physical origin-invariance gate still fails. A fresh H2 comparison with
+energy tolerance 1e-12 Ha, IR grid 1e6, and identical saved DF factors gives an
+origin energy change of 1.0718154e-6 Ha in GW, versus below 2.5e-15 Ha in HF
+and finite electron-photon CI. The GW cavity shift differs from matched CI by
+3.19%, and its induced connected photon coordinate variance is 37.87% smaller.
+The photon cutoffs 8/16 converge. Tightening the numerical setup and matching
+the Hamiltonians does not remove these approximation errors.
+
+The internal bare-bubble/ring response has a nonzero finite-frequency response
+to conserved N in interacting H2. This is evidence of a response-vertex problem,
+not a failure of macroscopic particle conservation by self-consistent GW.
+Published [molecular QED-GW theory](https://arxiv.org/html/2609.00594v2) explicitly
+discusses the lack of translation invariance of individual ring correlation
+energies. The numerical observations are consistent with that limitation;
+they do not prove that every aspect of the implementation is correct.
+Centering a dipole by convention does not constitute passing the physical gate.
+A consistent response-vertex/coherent-transformation method extension needs its
+own derivation and benchmarks before small application GW signals are claimed.
+
+`cavity_reference_audit.py --require-origin-invariance` saves evidence then fails
+if the physical gate fails. `cavity_validation_status.py` combines the limits,
+workflow, invalid-input, oracle and matched-reference JSON reports; with
+`--require-physical` it returns nonzero for failed physical readiness even when
+every implementation check passes. Sodium production GW was checkpointed and
+paused while this limitation is assessed. No accepted charged GW difference
+is inferred from unconverged checkpoints.

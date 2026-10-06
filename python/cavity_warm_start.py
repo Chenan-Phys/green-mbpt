@@ -5,6 +5,7 @@ The source is preserved. Only an initial guess is transferred; the target
 Hamiltonian is loaded from its own input and must converge independently.
 """
 import json
+import hashlib
 from pathlib import Path
 import h5py
 from cavity_analyze import analyze
@@ -24,6 +25,13 @@ def seed(source,target):
             return {"seeded":False,"reason":"source GW did not pass acceptance"}
         left=json.loads((source/"manifest.json").read_text())
         right=json.loads((target/"manifest.json").read_text())
+        provenance=json.loads((source/"gw_provenance.json").read_text())
+        source_sha=hashlib.sha256((source/"input.h5").read_bytes()).hexdigest()
+        target_sha=hashlib.sha256((target/"input.h5").read_bytes()).hexdigest()
+        if provenance.get("input_sha256")!=source_sha or left.get("input_sha256")!=source_sha:
+            raise RuntimeError("Warm-start source input does not match its saved provenance")
+        if right.get("input_sha256")!=target_sha:
+            raise RuntimeError("Warm-start target input does not match its manifest")
         keys=("atoms","basis","auxbasis","ecp","charge","spin","fix_spin","omega_ev",
               "origin_angstrom","polarization","nao","nelectron","native_basis")
         if any(left.get(k)!=right.get(k) for k in keys):
@@ -42,10 +50,9 @@ def seed(source,target):
         except Exception:
             temporary.unlink(missing_ok=True)
             raise
-        provenance=json.loads((source/"gw_provenance.json").read_text())
         record={"seeded":True,"source":str(source),"source_lambda_au":left["lambda_au"],
                 "target_lambda_au":right["lambda_au"],"source_input_sha256":left["input_sha256"],
                 "interpretation":"initial guess only; target must converge under its own Hamiltonian"}
-        provenance.update(input_sha256=right["input_sha256"],initial_guess=record)
+        provenance.update(input_sha256=target_sha,initial_guess=record,requires_reconvergence=True)
         (target/"gw_provenance.json").write_text(json.dumps(provenance,indent=2)+"\n")
         return record
