@@ -23,6 +23,7 @@
 #define GREEN_MBPT_KERNEL_FACTORY_H
 
 #include "kernels.h"
+#include "thc_cpu_kernels.h"
 #include "custom_kernels.h"
 
 #define CUSTOM_GW_KERNEL_CALL(NS, ENUM, X2C, p, nao, nso, ns, NQ, ft, bz_utils, S_k) \
@@ -47,6 +48,13 @@ namespace green::mbpt::kernels {
                                                                                               size_t NQ, double madelung,
                                                                                               const bz_utils_t& bz_utils,
                                                                                               const ztensor<4>& S_k) {
+      auto options=integrals::thc_options(p);
+      if(options.enabled && p["thc_mode"].as<std::string>()=="native") native_thc_scope(p,X2C,bz_utils);
+      if(options.enabled && p["thc_mode"].as<std::string>()=="native" && p["kernel"].as<kernel_type>()==CPU) {
+        auto kernel=std::make_shared<thc_hf_cpu_kernel>(p,nao,nso,ns,NQ,madelung,bz_utils,S_k);
+        std::function<x_type(const x_type&)> callback=[kernel](const x_type& dm){return kernel->solve(dm);};
+        return std::tuple{std::shared_ptr<void>(kernel),callback};
+      }
       if (p["kernel"].as<kernel_type>() == CPU) {
         if (X2C) {
           std::shared_ptr<void> kernel(new hf_x2c_cpu_kernel(p, nao, nso, ns, NQ, madelung, bz_utils, S_k));
@@ -85,6 +93,13 @@ namespace green::mbpt::kernels {
     static std::tuple<std::shared_ptr<void>, std::function<void(G_type&, G_type&)>> get_kernel(
         bool X2C, const params::params& p, size_t nao, size_t nso, size_t ns, size_t NQ, const grids::transformer_t& ft,
         const bz_utils_t& bz_utils, const ztensor<4>& S_k) {
+      auto options=integrals::thc_options(p);
+      if(options.enabled && p["thc_mode"].as<std::string>()=="native") native_thc_scope(p,X2C,bz_utils);
+      if(options.enabled && p["thc_mode"].as<std::string>()=="native" && p["kernel"].as<kernel_type>()==CPU) {
+        auto kernel=std::make_shared<thc_gw_cpu_kernel>(p,nao,nso,ns,NQ,ft,bz_utils);
+        std::function<void(G_type&,G_type&)> callback=[kernel](G_type& g,G_type& s){kernel->solve(g,s);};
+        return std::tuple{std::shared_ptr<void>(kernel),callback};
+      }
       if (p["kernel"].as<kernel_type>() == CPU) {
         std::shared_ptr<void> kernel(new gw_cpu_kernel(p, nao, nso, ns, NQ, ft, bz_utils, S_k, X2C));
         std::function callback = [kernel](G_type& g, G_type& s) { static_cast<gw_cpu_kernel*>(kernel.get())->solve(g, s); };

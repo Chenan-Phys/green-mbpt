@@ -48,7 +48,7 @@ namespace green::mbpt::kernels {
         _q0_utils(bz_utils.inq(), 0, S_k, _path, p["q0_treatment"]),
         // _P0_tilde(0, 0, 0, 0),
         _eps_inv_wq(ft.wsample_bose().size(), bz_utils.inq()),
-        _coul_int1(nullptr) {
+        _coul_int1(nullptr), _thc_options(integrals::thc_options(p)) {
       _q0_utils.resize(_NQ);
     }
 
@@ -100,6 +100,7 @@ namespace green::mbpt::kernels {
     // Pre-computed fitted densities
     // This object reads 3-index tensors into Vij_Q
     df_integral_t*              _coul_int1;
+    integrals::thc_reader_options _thc_options;
 
   private:
     /**
@@ -186,7 +187,7 @@ namespace green::mbpt::kernels {
     hf_kernel(const params::params& p, size_t nao, size_t nso, size_t ns, size_t NQ, double madelung, const bz_utils_t& bz_utils,
               const ztensor<4>& S_k) :
         _nao(nao), _nso(nso), _nk(bz_utils.nk()), _ink(bz_utils.ink()), _nq(bz_utils.nq()), _inq(bz_utils.inq()), _ns(ns), _NQ(NQ), _madelung(madelung),
-        _bz_utils(bz_utils), _S_k(S_k), _hf_path(p["dfintegral_hf_file"]), statistics("Hartree Fock"){};
+        _bz_utils(bz_utils), _S_k(S_k), _hf_path(p["dfintegral_hf_file"]), statistics("Hartree Fock"), _thc_options(integrals::thc_options(p)){};
     virtual ~hf_kernel() = default;
 
   protected:
@@ -211,6 +212,7 @@ namespace green::mbpt::kernels {
     // overlap
     const ztensor<4>& _S_k;
     const std::string _hf_path;
+    integrals::thc_reader_options _thc_options;
     utils::timing     statistics;
   };
 

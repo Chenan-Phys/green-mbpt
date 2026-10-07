@@ -7,6 +7,7 @@
 #define GREEN_DFINTEGRAL_H
 
 #include <green/symmetry/symmetry.h>
+#include <green/integrals/thc_factor_data.h>
 #include <green/utils/mpi_shared.h>
 #include <green/utils/mpi_utils.h>
 
@@ -37,8 +38,16 @@ namespace green::mbpt {
     using MatrixXcd = Eigen::Matrix<std::complex<double>, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
     using MatrixXcf = Eigen::Matrix<std::complex<float>, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
     using MatrixXd  = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
-    df_integral_t(const std::string& path, int nao, int NQ, const bz_utils_t& bz_utils, const utils::mpi_context & cntx = utils::mpi_context::context()) :
+    df_integral_t(const std::string& path, int nao, int NQ, const bz_utils_t& bz_utils, const utils::mpi_context & cntx = utils::mpi_context::context(),
+                  const integrals::thc_reader_options& options = {}) :
         _base_path(path), _k0(-1), _current_chunk(-1), _chunk_size(0), _NQ(NQ), _bz_utils(bz_utils) {
+      if (integrals::thc_factor_data::exists(path)) {
+        _thc=std::make_shared<integrals::thc_factor_data>(path,bz_utils.nk(),nao,NQ,options);
+        _chunk_size=1;
+        _vij_Q=std::make_shared<int_data>(std::array<size_t,4>{1ul,size_t(NQ),size_t(nao),size_t(nao)},cntx);
+        return;
+      }
+      if(options.enabled) throw std::runtime_error("explicit THC representation requires thc_meta.h5");
       h5pp::archive ar(path + "/meta.h5");
       if(ar.has_attribute("__green_version__")) {
         std::string int_version = ar.get_attribute<std::string>("__green_version__");
@@ -62,6 +71,16 @@ namespace green::mbpt {
      * @param type
      */
     void read_integrals(size_t k1, size_t k2) {
+      if(_thc) {
+        auto pair=_thc->source_representative(k1,k2);
+        long key=pair.first*_thc->nk()+pair.second;
+        if(key==_current_chunk) return;
+        _vij_Q->fence();
+        if(!_vij_Q->cntx().node_rank) _thc->reconstruct(pair.first,pair.second,_vij_Q->object().data());
+        _vij_Q->fence();
+        _current_chunk=key;
+        return;
+      }
       assert(k1 >= 0);
       assert(k2 >= 0);
       // Find corresponding index for k-pair (k1,k2). Only k-pair with k1 > k2 will be stored.
@@ -84,6 +103,7 @@ namespace green::mbpt {
     }
 
     void read_a_chunk(size_t c_id, ztensor<4>& V_buffer) {
+      if(_thc) throw std::logic_error("THC is a pair provider, not a legacy chunk archive");
       V_buffer.set_zero();
       std::string   fname = _base_path + "/" + _chunk_basename + "_" + std::to_string(c_id) + ".h5";
       h5pp::archive ar(fname);
@@ -161,6 +181,14 @@ namespace green::mbpt {
      */
     template <typename prec>
     void symmetrize(tensor<prec, 3>& vij_Q_k1k2, size_t k1, size_t k2, size_t NQ_offset = 0, size_t NQ_local = 0) {
+      if(_thc) {
+        const size_t count=NQ_local?NQ_local:size_t(_NQ);
+        if(vij_Q_k1k2.shape()!=std::array<size_t,3>{count,_thc->nao(),_thc->nao()}) throw std::logic_error("THC target shape mismatch");
+        std::vector<std::complex<double>> pair(count*_thc->nao()*_thc->nao());
+        _thc->reconstruct(k1,k2,pair.data(),NQ_offset,count);
+        Complex_DoubleToType(pair.data(),vij_Q_k1k2.data(),pair.size());
+        return;
+      }
       int                                      k1k2_wrap = wrap(k1, k2);
       std::pair<int, integral_symmetry_type_e> vtype     = v_type(k1, k2);
       int                                      NQ        = _NQ;
@@ -191,6 +219,7 @@ namespace green::mbpt {
     const ztensor<3>& v_bar_ij_Q() const { return _v_bar_ij_Q; }
 
     int               wrap(int k1, int k2) {
+      if(_thc) return 0; // raw GF2 correction consumers retain the source representative
       size_t idx = (k1 >= k2) ? k1 * (k1 + 1) / 2 + k2 : k2 * (k2 + 1) / 2 + k1;  // k-pair = (k1, k2) or (k2, k1)
       // determine type
       if (_bz_utils.k_symmetry().conj_kpair_list()[idx] != idx) {
@@ -208,6 +237,7 @@ namespace green::mbpt {
     }
 
   private:
+    std::shared_ptr<integrals::thc_factor_data> _thc;
     // Coulomb integrals stored in density fitting format
     std::shared_ptr<int_data> _vij_Q;
     // G=0 correction to coulomb integral stored in density fitting format for second-order e3xchange diagram

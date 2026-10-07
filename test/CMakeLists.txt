@@ -1,5 +1,12 @@
 project(_test)
 
+if(CUSTOM_KERNELS)
+    add_executable(thc_reader_probe thc_reader_probe.cpp)
+    target_link_libraries(thc_reader_probe PRIVATE GREEN::MBPT)
+    add_executable(thc_frozen_probe thc_frozen_probe.cpp)
+    target_link_libraries(thc_frozen_probe PRIVATE GREEN::MBPT)
+endif()
+
 Include(FetchContent)
 
 FetchContent_Declare(

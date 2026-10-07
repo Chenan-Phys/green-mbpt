@@ -49,6 +49,9 @@ namespace green::mbpt {
       ar["params/ns"] >> _ns;
       ar["params/NQ"] >> _NQ;
       ar.close();
+      _thc_options=integrals::thc_options(p);
+      if(_thc_options.enabled && p["thc_mode"].as<std::string>()=="native")
+        throw std::runtime_error("native THC GF2 direct/exchange and correction diagrams are not implemented; use reconstruct");
     }
 
      /**
@@ -75,6 +78,7 @@ namespace green::mbpt {
 
     // Path to H5 file
     const std::string _path;
+    integrals::thc_reader_options _thc_options;
 
     // references to arrays
     ztensor<5>        Sigma_local;
