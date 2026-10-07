@@ -9,6 +9,9 @@ target_link_libraries(thc_frozen_probe PRIVATE GREEN::MBPT)
 add_executable(thc_fft_probe thc_fft_probe.cpp)
 target_link_libraries(thc_fft_probe PRIVATE GREEN::MBPT)
 add_test(NAME THC_full_mesh_complex_FFT COMMAND thc_fft_probe)
+add_test(NAME THC_coordinated_GPU_dependency COMMAND ${CMAKE_COMMAND}
+    -DGREEN_SOURCE_DIR=${CMAKE_SOURCE_DIR} -DGREEN_TEST_BINARY_DIR=${CMAKE_BINARY_DIR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/thc_cmake_kernel_test.cmake)
 
 Include(FetchContent)
 
