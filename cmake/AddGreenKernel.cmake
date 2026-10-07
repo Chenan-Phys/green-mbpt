@@ -1,6 +1,6 @@
 
 function(add_green_kernel CUSTOM_KERNELS_IN)
-    set(GREEN_GPU_REVISION "8a529340bab7f7e281033d64311edb2962b03ef9" CACHE STRING "Coordinated THC GPU revision")
+    set(GREEN_GPU_REVISION "a8bdfca9f485be5d1ff4535eb61d0caeb7d585a1" CACHE STRING "Coordinated THC GPU revision")
     set(CUSTOM_KERNELS_TMP "${CUSTOM_KERNELS_IN}")
     set(CUSTOM_KERNELS_LST "")
     foreach(KERNEL ${CUSTOM_KERNELS_TMP})
@@ -13,12 +13,16 @@ function(add_green_kernel CUSTOM_KERNELS_IN)
         Include(FetchContent)
 
         set(KERNEL_REVISION "${GREEN_RELEASE}")
+        set(KERNEL_SOURCE "${KERNEL}")
         if(KERNEL_NAME STREQUAL "green-gpu")
             set(KERNEL_REVISION "${GREEN_GPU_REVISION}")
+            if(KERNEL STREQUAL "https://github.com/Green-Phys/green-gpu" OR KERNEL STREQUAL "https://github.com/Green-Phys/green-gpu.git")
+                set(KERNEL_SOURCE "https://github.com/Chenan-Phys/green-gpu.git")
+            endif()
         endif()
         FetchContent_Declare(
             ${KERNEL_NAME}
-            GIT_REPOSITORY ${KERNEL}
+            GIT_REPOSITORY ${KERNEL_SOURCE}
             GIT_TAG ${KERNEL_REVISION}
         )
 

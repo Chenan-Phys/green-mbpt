@@ -239,6 +239,10 @@ namespace green::mbpt {
 
   inline void check_input(const params::params& p) {
     auto thc_options=integrals::thc_options(p);
+    const auto momentum_mode=p["thc_gw_k_contraction"].as<std::string>();
+    if(momentum_mode!="direct" && momentum_mode!="fft")throw std::runtime_error("thc_gw_k_contraction must be direct or fft");
+    if(momentum_mode=="fft" && (!thc_options.enabled || p["thc_mode"].as<std::string>()!="native" || p["scf_type"].as<scf_type>()!=GW))
+      throw std::runtime_error("THC momentum FFT requires native THC GW");
     const bool hf_thc=integrals::thc_factor_data::exists(p["dfintegral_hf_file"].as<std::string>());
     const bool correlation_thc=integrals::thc_factor_data::exists(p["dfintegral_file"].as<std::string>());
     if(!thc_options.enabled && (hf_thc || correlation_thc)) throw std::runtime_error("THC-only factors require explicit THC representation and mode");
@@ -252,6 +256,12 @@ namespace green::mbpt {
       size_t nk,nao,nso,NQ;
       descriptor_input["params/nk"]>>nk; descriptor_input["params/nao"]>>nao;
       descriptor_input["params/nso"]>>nso; descriptor_input["params/NQ"]>>NQ;
+      if(p["thc_mode"].as<std::string>()=="native") {
+        size_t ink,inq,nq;
+        descriptor_input["symmetry/k/ink"]>>ink;
+        descriptor_input["symmetry/q/inq"]>>inq;descriptor_input["symmetry/q/nq"]>>nq;
+        if(ink!=nk || inq!=nq) throw std::runtime_error("native THC requires full-BZ input; spatial/TR reductions are unsupported");
+      }
       descriptor_input.close();
       if(nao!=nso) throw std::runtime_error("THC X2C/spinors are unsupported");
       integrals::thc_factor_data hf(p["dfintegral_hf_file"],nk,nao,NQ,thc_options);
@@ -260,7 +270,12 @@ namespace green::mbpt {
         integrals::thc_factor_data correlation(p["dfintegral_file"],nk,nao,NQ,thc_options);
         if(correlation.set_kind()!="correlation") throw std::runtime_error("correlation THC set kind mismatch");
       }
-      if(!utils::context().global_rank) std::cout<<"Interaction THC, mode "<<p["thc_mode"].as<std::string>()<<"; original Q retained; GF2 GPU is hybrid"<<std::endl;
+      if(!utils::context().global_rank) {
+        std::cout<<"Interaction THC, mode "<<p["thc_mode"].as<std::string>()<<"; original Q retained; P="
+                 <<(p["P_sp"].as<bool>()?"single":"double")<<"; Sigma="<<(p["Sigma_sp"].as<bool>()?"single":"double");
+        if(p["scf_type"].as<scf_type>()==GF2 && p["kernel"].as<kernel_type>()!=CPU)std::cout<<"; GPU HF / CPU GF2 correlation";
+        std::cout<<std::endl;
+      }
     }
     std::string   path = p["input_file"];
     h5pp::archive ar(path, "r");

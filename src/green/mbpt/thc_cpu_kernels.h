@@ -4,6 +4,7 @@
 #include "kernels.h"
 #include <green/integrals/thc_factor_data.h>
 #include <Eigen/LU>
+#include <green/tensors/thc_gw_fft.h>
 
 namespace green::mbpt::kernels {
   inline void native_thc_scope(const params::params& p,bool X2C,const symmetry::brillouin_zone_utils& bz) {
@@ -23,6 +24,8 @@ namespace green::mbpt::kernels {
       native_thc_scope(p,nao!=nso,bz);
       _factors=std::make_shared<integrals::thc_factor_data>(_hf_path,_nk,_nao,_NQ,_thc_options);
       if(_factors->set_kind()!="hf") throw std::runtime_error("native HF requires HF core");
+      if(6.0*_factors->rank()*_factors->rank()*16>double(p["thc_workspace_mb"].as<size_t>())*1024*1024)
+        throw std::runtime_error("native THC HF matrix workspace exceeds declared budget");
     }
 
     ztensor<4> solve(const ztensor<4>& dm) {
@@ -70,6 +73,10 @@ namespace green::mbpt::kernels {
       if(_factors->set_kind()!="correlation") throw std::runtime_error("native GW requires correlation core");
       if(_nt%2) throw std::runtime_error("native GW requires even fermionic tau grid");
       const size_t r=_factors->rank();
+      _fft=p["thc_gw_k_contraction"].as<std::string>()=="fft";
+      _workspace_bytes=p["thc_workspace_mb"].as<size_t>()*1024*1024;
+      if(_fft){tensors::thc_momentum_fft layout(*_factors);tensors::check_thc_fft_workspace(*_factors,_nt,_nw,_workspace_bytes);}
+      if(!utils::context().global_rank)std::cout<<"Native THC CPU GW momentum mode "<<(_fft?"host FFT":"direct sums")<<std::endl;
       if(double(_nt+_nw)*r*r*16 > double(p["thc_workspace_mb"].as<size_t>())*1024*1024)
         throw std::runtime_error("native THC GW tau/frequency workspace exceeds declared budget");
     }
@@ -81,6 +88,10 @@ namespace green::mbpt::kernels {
       // A node leader contracts full q/tau tiles; q is distributed over nodes.
       // Interpolation I is never partitioned by the old Gaussian-Q schedule.
       if(!ctx.node_rank) {
+        if(_fft) {
+          if(!ctx.internode_rank){tensors::thc_cpu_matrix_ops ops;tensors::thc_gw_fft_solve(*_factors,_ft,g.object(),sigma.object(),ops,_workspace_bytes);}
+          utils::allreduce(MPI_IN_PLACE,sigma.object().data(),sigma.object().size(),MPI_C_DOUBLE_COMPLEX,MPI_SUM,ctx.internode_comm);
+        } else {
         for(size_t q=ctx.internode_rank;q<_factors->nq();q+=ctx.internode_size) {
           ztensor<4> chi(_nt,1,r,r),wc_w(_nw,1,r,r);
           chi.set_zero(); wc_w.set_zero();
@@ -125,11 +136,14 @@ namespace green::mbpt::kernels {
           }
         }
         utils::allreduce(MPI_IN_PLACE,sigma.object().data(),sigma.object().size(),MPI_C_DOUBLE_COMPLEX,MPI_SUM,ctx.internode_comm);
+        }
       }
       sigma.fence();
     }
   private:
     size_t _n,_ns,_nk,_nt,_nw;
+    bool _fft=false;
+    size_t _workspace_bytes=0;
     const grids::transformer_t& _ft;
     std::shared_ptr<integrals::thc_factor_data> _factors;
   };

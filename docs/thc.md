@@ -6,7 +6,7 @@ The standalone Python exporter is documented in green-mbtools/docs/thc.md.
 
 Explicit flags: `--interaction_representation thc --thc_mode reconstruct|native`.
 `thc_factor_memory_mb` bounds resident X/cores; `thc_workspace_mb` bounds the
-native one-q tau/frequency arrays. Additional projection, linear solve and
+native HF matrix estimate and GW tau/frequency arrays. Additional projection, linear solve and
 transform scratch exists. Both default to 512 MiB. Archive input fingerprints
 must match the exact one-body input file; retain original NQ.
 
@@ -25,9 +25,21 @@ are scheduled independently of Gaussian-Q partitioning. Initially one node
 leader handles each node's assigned q tasks.
 
 Unsupported modes reject explicitly: native GF2; native IBZ/TR/spatial
-reduction; spinors; native single precision; extrapolation/AqQ. Native momentum
-sums remain direct. Production FFT and point-space symmetry require separate
-validation. Reconstruction covariance is checked before export.
+reduction; spinors; native single precision; extrapolation/AqQ.
+Reconstruction covariance is checked before export.
+
+`--thc_gw_k_contraction direct|fft` defaults to direct. FFT requires native GW
+on a complete Cartesian commensurate k/q mesh; irregular/reduced meshes reject
+the explicit FFT option. Use direct sums for other supported inputs. Shifted
+k meshes are embedded as cosets: actual Bloch values carry the phases. Complex
+correlations use the negative Fourier index without conjugating the second
+field. Host FFTs are shared by CPU and GPU consumers. They retain all-q Wc(tau)
+under a conservative workspace check; direct mode retains one q at a time.
+The initial FFT schedule executes on the first node leader and reduces Sigma
+over node leaders. Multi-node scaling is not established by same-host MPI tests.
+Tests cover shuffled shifted anisotropic meshes, physical direct/FFT agreement,
+both CPU/GPU consumers and both host/device memory flags. HF remains direct;
+point-space symmetry and low-memory distributed FFTs are separate work.
 
 The MPI probes in test/ validate CPU/GPU-host original-Q slices and frozen
 one-body G across all supported methods/modes. They refuse output reuse.

@@ -156,6 +156,7 @@ namespace green::mbpt {
   inline void define_parameters(params::params& p) {
     integrals::define_thc_parameters(p);
     p.define<size_t>("thc_workspace_mb", "Maximum native THC tau/frequency workspace in MiB", 512);
+    p.define<std::string>("thc_gw_k_contraction", "Native GW momentum contraction: direct or fft", "direct");
     p.define<std::string>("dfintegral_hf_file", "Path to Hartree-Fock integrals", "df_hf_int");
     p.define<std::string>("dfintegral_file", "Path to integrals for high order theories", "df_int");
     p.define<int>("verbose", "Print verbose output.", 0);
