@@ -7,6 +7,8 @@
 #include <green/tensors/thc_gw_fft.h>
 #include <green/tensors/thc_sigma_orbital.h>
 #include <exception>
+#include <thread>
+#include <mutex>
 
 namespace green::mbpt::kernels {
   inline void native_thc_scope(const params::params& p,bool X2C,const symmetry::brillouin_zone_utils& bz) {
@@ -83,9 +85,6 @@ namespace green::mbpt::kernels {
       _reuse_fft=p["thc_fft_reuse_screening"].as<bool>();
       _cpu_threads=p["thc_cpu_threads"].as<size_t>();
       if(!_cpu_threads || _cpu_threads>64)throw std::runtime_error("thc_cpu_threads must be in 1..64");
-#ifndef _OPENMP
-      if(_cpu_threads!=1)throw std::runtime_error("thc_cpu_threads requires an OpenMP build");
-#endif
       _vertices.resize(_factors->nq());
       if(_fft){tensors::thc_momentum_fft layout(*_factors);tensors::check_thc_fft_workspace(*_factors,_nt,_nw,_workspace_bytes,_auxiliary);}
       if(!utils::context().global_rank)std::cout<<"Native THC CPU GW momentum mode "<<(_fft?"host FFT":"direct sums")<<std::endl;
@@ -184,6 +183,15 @@ namespace green::mbpt::kernels {
     }
     void solve_auxiliary_direct(const ztensor<5>& g,ztensor<5>& sigma,size_t owner,size_t owners) {
       const size_t r=_factors->rank(),Q=_factors->naux();
+      // GREEN v1 ndarray slices copy a non-atomic storage reference count.
+      // Borrow contiguous buffers once; workers must never create tensor views.
+      const auto* green_data=g.data();auto* sigma_data=sigma.data();
+      auto green_at=[&](size_t t,size_t s,size_t k) {
+        return CMMatrixXcd(green_data+((t*_ns+s)*_nk+k)*_n*_n,_n,_n);
+      };
+      auto sigma_at=[&](size_t t,size_t s,size_t k) {
+        return MMatrixXcd(sigma_data+((t*_ns+s)*_nk+k)*_n*_n,_n,_n);
+      };
       std::vector<size_t> qs;
       for(size_t q=owner;q<_factors->nq();q+=owners)qs.push_back(q);
       if(qs.empty())return;
@@ -202,7 +210,7 @@ namespace green::mbpt::kernels {
       const double base_working=scratch+(time_batch?time_fields:0.)+(retain?histories+vertex_cache:one_vertex);
       if(!retain && _orbital && scratch+double(_nk)*_n*_n*Q>budget)
         throw std::runtime_error("orbital THC Sigma workspace cannot hold one q vertex slice");
-      const size_t workers=retain?std::min(_cpu_threads,size_t(1.+std::max(0.,budget-base_working)/per_worker)):1;
+      const size_t workers=retain?std::min({_cpu_threads,_nt,size_t(1.+std::max(0.,budget-base_working)/per_worker)}):1;
       const double working=base_working+(workers-1)*per_worker;
       std::vector<MatrixXcd> projected_g;
       if((!_orbital || !retain) && working+double(_nt)*_ns*_nk*rr<=budget) {
@@ -227,7 +235,7 @@ namespace green::mbpt::kernels {
         for(const auto& pair:pairs) {
           tensors::thc_vertex_matrix weighted=pair.v*core;
           for(size_t s=0;s<_ns;++s)
-            matrix(sigma(t,s,pair.k))-=tensors::thc_orbital_sigma_weighted(pair.v,weighted,matrix(g(t,s,pair.kp)))/double(_nk);
+            sigma_at(t,s,pair.k)-=tensors::thc_orbital_sigma_weighted(pair.v,weighted,green_at(t,s,pair.kp))/double(_nk);
         }
       };
       auto screen_q=[&](size_t q,const MatrixXcd& m) {
@@ -268,7 +276,7 @@ namespace green::mbpt::kernels {
           values.reserve(_ns*_nk);
           for(size_t s=0;s<_ns;++s)for(size_t k=0;k<_nk;++k) {
             auto X=_factors->X(k);
-            values.emplace_back(X*matrix(g(t,s,k))*X.adjoint());
+            values.emplace_back(X*green_at(t,s,k)*X.adjoint());
           }
         }
         return values;
@@ -291,7 +299,7 @@ namespace green::mbpt::kernels {
       auto backproject=[&](size_t t,const std::vector<MatrixXcd>& point_sigma) {
         for(size_t s=0;s<_ns;++s)for(size_t k=0;k<_nk;++k) {
           auto X=_factors->X(k);
-          matrix(sigma(t,s,k))-=X.adjoint()*point_sigma[s*_nk+k]*X;
+          sigma_at(t,s,k)-=X.adjoint()*point_sigma[s*_nk+k]*X;
         }
       };
       if(retain) {
@@ -333,26 +341,40 @@ namespace green::mbpt::kernels {
         }
         if(_orbital)for(size_t iq=0;iq<qs.size();++iq)
           if(_vertices[qs[iq]].empty())_vertices[qs[iq]]=build_vertices(qs[iq],cores[iq]);
+        std::vector<const std::complex<double>*> response_data;
+        for(const auto& core:response)response_data.push_back(core.data());
         std::exception_ptr failure;
-#pragma omp parallel for schedule(static) num_threads(workers)
-        for(long it=0;it<long(_nt);++it) {
+        std::mutex failure_mutex;
+        auto run_worker=[&](size_t worker) {
+        for(size_t t=_nt*worker/workers;t<_nt*(worker+1)/workers;++t) {
           try {
-            const size_t t=size_t(it);
             if(_orbital) {
-              for(size_t iq=0;iq<qs.size();++iq)orbital_tau(t,matrix(response[iq](t,0)),_vertices[qs[iq]]);
+              for(size_t iq=0;iq<qs.size();++iq)
+                orbital_tau(t,CMMatrixXcd(response_data[iq]+t*Q*Q,Q,Q),_vertices[qs[iq]]);
             } else {
               auto local=project_time(t),point_sigma=point_fields();
               for(size_t iq=0;iq<qs.size();++iq) {
-                MatrixXcd wc=cores[iq]*matrix(response[iq](t,0))*cores[iq].adjoint();
+                MatrixXcd wc=cores[iq]*CMMatrixXcd(response_data[iq]+t*Q*Q,Q,Q)*cores[iq].adjoint();
                 accumulate(t,qs[iq],wc,local,point_sigma);
               }
               backproject(t,point_sigma);
             }
           }catch(...) {
-#pragma omp critical(thc_sigma_failure)
-            {if(!failure)failure=std::current_exception();}
+            std::lock_guard<std::mutex> guard(failure_mutex);
+            if(!failure)failure=std::current_exception();
           }
         }
+        };
+        // Scope threading to THC; do not activate legacy ndarray/OpenMP loops.
+        std::vector<std::thread> threads;
+        try {
+          for(size_t worker=1;worker<workers;++worker)threads.emplace_back(run_worker,worker);
+        }catch(...) {
+          for(auto& thread:threads)thread.join();
+          throw;
+        }
+        run_worker(0);
+        for(auto& thread:threads)thread.join();
         if(failure)std::rethrow_exception(failure);
       } else {
         // Bounded fallback: retain one q in Q space and combine its kp terms.
