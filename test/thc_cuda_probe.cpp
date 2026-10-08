@@ -47,9 +47,16 @@ int main(){
         auto dm=ops.upload(cores);
         auto compressed=ops.download(ops.compress(dm,ops.upload(response)));
         auto expanded=ops.download(ops.expand(dm,ops.upload(correlation)));
+        auto dh=ops.adjoint(dm);
+        auto adjoints=ops.download(dh);
+        auto packed_compressed=ops.download(ops.compress(dm,ops.upload(response),dh));
+        auto packed_expanded=ops.download(ops.expand(dm,ops.upload(correlation),dh));
         for(size_t q=0;q<cores.size();++q){
+          compare(adjoints[q],matrix(cores[q].adjoint()));
           compare(compressed[q],matrix(cores[q].adjoint()*response*cores[q]));
           compare(expanded[q],matrix(cores[q]*correlation*cores[q].adjoint()));
+          compare(packed_compressed[q],matrix(cores[q].adjoint()*response*cores[q]));
+          compare(packed_expanded[q],matrix(cores[q]*correlation*cores[q].adjoint()));
         }
       }
       for(auto dims:std::vector<std::pair<size_t,size_t>>{{5,3},{3,5}}){
@@ -98,6 +105,13 @@ int main(){
       auto dx=ops.upload(x),dg=ops.upload(g);
       auto projected=ops.download(ops.project(dx,dg));
       for(size_t i=0;i<nk;++i)compare(projected[i],matrix(x[i]*g[i]*x[i].adjoint()));
+      auto dxh=ops.adjoint(dx);
+      auto packed_projection=ops.download(ops.project(dx,dg,dxh));
+      auto packed_back=ops.download(ops.backproject(dx,ops.upload(a),dxh,-.7));
+      for(size_t i=0;i<nk;++i){
+        compare(packed_projection[i],matrix(x[i]*g[i]*x[i].adjoint()));
+        compare(packed_back[i],matrix(-.7*x[i].adjoint()*a[i]*x[i]));
+      }
       auto da=ops.upload(a),db=ops.upload(b);
       green::tensors::thc_momentum_fft cpu(k,q,nk);
       for(bool fft:{false,true}){
@@ -144,6 +158,19 @@ int main(){
       ops.finish_stage();
     }
     bool rejected=false;
+    {
+      gpu profiled(true,4ul*1024*1024,false,true);
+      auto a=profiled.upload(values(19,23,.6));
+      auto ah=profiled.adjoint(a);
+      auto ahh=profiled.adjoint(ah);
+      compare(profiled.download(ahh)[0],values(19,23,.6));
+      profiled.multiply(a,ah);profiled.finish_stage();
+      auto times=profiled.component_seconds();
+      if(times.empty() || !times.count("adjoint_pack") || !profiled.component_seconds().empty())
+        throw std::runtime_error("CUDA component profile drain failed");
+      for(const auto& item:times)if(!std::isfinite(item.second) || item.second<=0)
+        throw std::runtime_error("invalid CUDA component time");
+    }
     try{gpu tiny(true,1024);tiny.allocate(16,16);}catch(const std::runtime_error&){rejected=true;}
     std::cout<<"Resident THC complex projection/screening/IR core reorder/shifted anisotropic cuFFT error="<<maximum<<", budget_rejected="<<rejected<<std::endl;
     return maximum>1e-11 || !rejected;

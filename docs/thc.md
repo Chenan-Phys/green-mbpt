@@ -99,8 +99,8 @@ representation. These controls do not change the fitted factors or fit tolerance
   mesh values are preserved. Two-spin Sigma uses five FFT calls per tau instead
   of six. The complete Nt=110 example uses 880 rather than 990 calls, including
   the unchanged bubble stage. A one-point mesh needs no transforms.
-- `--thc_cpu_threads N` defaults to 1, allows 1..64, and bounds parallel Sigma
-  tau workers by the declared workspace. It applies to auxiliary/direct CPU GW
+- `--thc_cpu_threads N` defaults to 1, allows 1..64, and bounds parallel projection, bubble
+  and Sigma tau workers by the declared workspace. It applies to auxiliary/direct CPU GW
   with retained owned-q histories. Streaming falls back to one worker. Each worker
   writes disjoint tau slices; q accumulation order is preserved. Use one BLAS
   thread when testing these workers to avoid nested CPU oversubscription.
@@ -110,7 +110,7 @@ representation. These controls do not change the fitted factors or fit tolerance
   this option is incompatible with explicit orbital Sigma. Zero preserves the
   original per-spin point path. Benchmark the size for the intended dimensions.
 
-MBPT uses standard C++ threads scoped to the THC Sigma kernel. It does not
+MBPT uses standard C++ threads scoped to the THC GW kernel. It does not
 activate legacy OpenMP tensor loops. Worker code uses borrowed Eigen maps of
 buffers whose owners stay alive through every join; it avoids ndarray slice
 creation because GREEN v1.0.0 storage reference counting is non-atomic.
@@ -130,3 +130,22 @@ it avoids ndarray slices because v1.0.0 storage reference counting is not atomic
 MBPT, embedding and the frozen probe request `MPI_THREAD_FUNNELED` at startup.
 Library clients using more than one tau worker must initialize MPI with at least
 that support level; all MPI calls stay on the calling main thread after joins.
+
+`thc_cpu_threads` also parallelizes independent projected-G cache entries and
+half-tau bubble work in retained auxiliary/direct execution. Each worker owns
+its scratch and borrows factor/G/history buffers through raw Eigen maps. Bubble
+pair order is precomputed to match the previous order. The workspace estimate
+uses the larger bubble/Sigma worker allowance, and streaming remains serial.
+
+`thc_profile` defaults to false. CPU component diagnostics require auxiliary
+screening, direct momentum mode and one tau worker; they report projection,
+bubble correlation/compression, screening and Sigma operations in retained
+execution. Use profiling separately from benchmarks. The GPU option reports
+CUDA-event intervals grouped by GEMM shape and convolution. The optional GPU
+`thc_cuda_prepacked_adjoint` preserves exact double-complex algebra and consumes
+additional checked workspace; it defaults to false.
+
+The lower basis exponent applies to point contractions when rank and original
+auxiliary count grow linearly with basis size. Orbital Sigma instead has
+n^2 Q^2 and n^3 Q terms, hence quartic work in that limit. It is an execution
+alternative for favorable finite shapes, not an asymptotic scaling improvement.

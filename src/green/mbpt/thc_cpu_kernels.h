@@ -9,8 +9,21 @@
 #include <exception>
 #include <thread>
 #include <mutex>
+#include <chrono>
+#include <map>
+#include <iomanip>
+#include <algorithm>
 
 namespace green::mbpt::kernels {
+  struct thc_cpu_component_timer {
+    std::map<std::string,double>* times;
+    const char* name;
+    std::chrono::steady_clock::time_point begin;
+    thc_cpu_component_timer(std::map<std::string,double>* output,const char* label):times(output),name(label) {
+      if(times)begin=std::chrono::steady_clock::now();
+    }
+    ~thc_cpu_component_timer(){if(times)(*times)[name]+=std::chrono::duration<double>(std::chrono::steady_clock::now()-begin).count();}
+  };
   inline void native_thc_scope(const params::params& p,bool X2C,const symmetry::brillouin_zone_utils& bz) {
     if(X2C || bz.ink()!=bz.nk() || bz.inq()!=bz.nq())
       throw std::runtime_error("native THC v1 requires scalar full-BZ one-body and response data; disable spatial/TR reduction");
@@ -84,13 +97,22 @@ namespace green::mbpt::kernels {
       _orbital=tensors::thc_sigma_orbital(p["thc_gw_sigma"].as<std::string>(),_n,r,NQ,_nk,_ns,_auxiliary,!_fft);
       _reuse_fft=p["thc_fft_reuse_screening"].as<bool>();
       _cpu_threads=p["thc_cpu_threads"].as<size_t>();
+      _profile=p["thc_profile"].as<bool>();
       if(!_cpu_threads || _cpu_threads>64)throw std::runtime_error("thc_cpu_threads must be in 1..64");
+      if(_profile && _cpu_threads>1)throw std::runtime_error("native THC CPU component profiling requires thc_cpu_threads=1");
+      if(_profile && (_fft || !_auxiliary))throw std::runtime_error("native THC CPU component profiling requires auxiliary screening and direct momentum mode");
       if(_cpu_threads>1) {
         int thread_support=MPI_THREAD_SINGLE;MPI_Query_thread(&thread_support);
         if(thread_support<MPI_THREAD_FUNNELED)
           throw std::runtime_error("thc_cpu_threads requires MPI_Init_thread with at least MPI_THREAD_FUNNELED");
       }
       _vertices.resize(_factors->nq());
+      _pairs.resize(_factors->nq());
+      for(size_t k=0;k<_nk;++k)for(size_t kp=0;kp<_nk;++kp)
+        _pairs[_factors->transfer(k,kp)].emplace_back(k,kp);
+      _bubble_pairs=_pairs;
+      for(auto& pairs:_bubble_pairs)std::sort(pairs.begin(),pairs.end(),[](const auto& a,const auto& b){
+        return std::make_pair(a.second,a.first)<std::make_pair(b.second,b.first);});
       if(_fft){tensors::thc_momentum_fft layout(*_factors);tensors::check_thc_fft_workspace(*_factors,_nt,_nw,_workspace_bytes,_auxiliary);}
       if(!utils::context().global_rank)std::cout<<"Native THC CPU GW momentum mode "<<(_fft?"host FFT":"direct sums")<<std::endl;
       const double direct_elements=_auxiliary?auxiliary_scratch_elements():double(_nt+_nw)*r*r;
@@ -99,6 +121,7 @@ namespace green::mbpt::kernels {
     }
 
     void solve(G_type& g,G_type& sigma) {
+      _component_seconds.clear();
       auto ctx=g.cntx();
       sigma.fence(); if(!ctx.node_rank) sigma.object().set_zero(); sigma.fence();
       const size_t r=_factors->rank();
@@ -132,10 +155,10 @@ namespace green::mbpt::kernels {
           if(!_auxiliary)Z=m*m.adjoint();
           for(size_t t=0;t<_nt/2;++t) {
             MatrixXcd bubble=MatrixXcd::Zero(r,r);
-            for(size_t i=0;i<_nk;++i) for(size_t j=0;j<_nk;++j) {
+            for(const auto& pair:_bubble_pairs[q]) {
+              const size_t i=pair.second,j=pair.first;
               // GREEN response q has the opposite sign to the source provider.
               // Reverse this pair explicitly: source(j,i) is the Sigma core q.
-              if(_factors->transfer(j,i)!=q) continue;
               for(size_t s=0;s<_ns;++s) {
                 auto Xi=_factors->X(i),Xj=_factors->X(j);
                 // P0_QR in GREEN is the transpose of the declared trace oracle.
@@ -160,8 +183,8 @@ namespace green::mbpt::kernels {
             matrix(wc_w(w,0))=tensors::thc_screened_correlation(m,Z,response,_auxiliary);
           }
           _ft.w_b_to_tau_f(wc_w,chi,0,_nt,true);
-          for(size_t k=0;k<_nk;++k) for(size_t kp=0;kp<_nk;++kp) {
-            if(_factors->transfer(k,kp)!=q) continue;
+          for(const auto& pair:_pairs[q]) {
+            const size_t k=pair.first,kp=pair.second;
             auto X=_factors->X(k),Xp=_factors->X(kp);
             for(size_t t=0;t<_nt;++t) for(size_t s=0;s<_ns;++s) {
               MatrixXcd temporary;const MatrixXcd* projected=nullptr;
@@ -176,6 +199,12 @@ namespace green::mbpt::kernels {
         }
       }
       sigma.fence();
+      if(_profile && !ctx.global_rank){
+        std::cout<<"Native THC CPU components {";bool first=true;
+        for(const auto& item:_component_seconds){if(!first)std::cout<<",";first=false;
+          std::cout<<"\""<<item.first<<"\":"<<std::setprecision(17)<<item.second;}
+        std::cout<<"}"<<std::endl;
+      }
     }
   private:
     struct orbital_pair {size_t k,kp;tensors::thc_vertex_matrix v;};
@@ -211,19 +240,34 @@ namespace green::mbpt::kernels {
       const bool retain=histories+scratch+time_fields+vertex_cache<=budget;
       const double one_vertex=_orbital?double(_nk)*_n*_n*Q:0.;
       const bool time_batch=scratch+time_fields+one_vertex<=budget;
-      const double per_worker=_orbital?double(_n)*_n*(6.*Q+2.*_ns*_nk):time_fields+4.*rr+2.*r*Q;
+      const double bubble_worker=time_fields+4.*rr+2.*r*Q;
+      const double sigma_worker=_orbital?double(_n)*_n*(6.*Q+2.*_ns*_nk):bubble_worker;
+      const double per_worker=std::max(bubble_worker,sigma_worker);
       const double base_working=scratch+(time_batch?time_fields:0.)+(retain?histories+vertex_cache:one_vertex);
       if(!retain && _orbital && scratch+double(_nk)*_n*_n*Q>budget)
         throw std::runtime_error("orbital THC Sigma workspace cannot hold one q vertex slice");
       const size_t workers=retain?std::min({_cpu_threads,_nt,size_t(1.+std::max(0.,budget-base_working)/per_worker)}):1;
       const double working=base_working+(workers-1)*per_worker;
+      auto parallel_tau=[&](size_t count,auto&& operation) {
+        std::exception_ptr failure;std::mutex failure_mutex;
+        auto work=[&](size_t worker){
+          try{for(size_t t=count*worker/workers;t<count*(worker+1)/workers;++t)operation(t);}
+          catch(...){std::lock_guard<std::mutex> guard(failure_mutex);if(!failure)failure=std::current_exception();}
+        };
+        std::vector<std::thread> threads;
+        try{for(size_t worker=1;worker<workers;++worker)threads.emplace_back(work,worker);}
+        catch(...){for(auto& thread:threads)thread.join();throw;}
+        work(0);for(auto& thread:threads)thread.join();if(failure)std::rethrow_exception(failure);
+      };
       std::vector<MatrixXcd> projected_g;
       if((!_orbital || !retain) && working+double(_nt)*_ns*_nk*rr<=budget) {
-        projected_g.reserve(_nt*_ns*_nk);
-        for(size_t t=0;t<_nt;++t)for(size_t s=0;s<_ns;++s)for(size_t k=0;k<_nk;++k) {
+        thc_cpu_component_timer timer(_profile?&_component_seconds:nullptr,"projected_G_cache");
+        projected_g.resize(_nt*_ns*_nk);
+        parallel_tau(projected_g.size(),[&](size_t index) {
+          const size_t t=index/(_ns*_nk),s=index/_nk%_ns,k=index%_nk;
           auto X=_factors->X(k);
-          projected_g.emplace_back(X*matrix(g(t,s,k))*X.adjoint());
-        }
+          projected_g[index]=X*green_at(t,s,k)*X.adjoint();
+        });
       }
       if(!utils::context().global_rank)std::cout<<"Native THC CPU projections "<<(projected_g.empty()?"streamed":"cached across q")
         <<"; screening auxiliary dimension "<<Q<<"; histories "<<(retain?"owned q retained":"one q streamed")
@@ -232,11 +276,12 @@ namespace green::mbpt::kernels {
         <<"; Sigma route "<<(_orbital?"orbital":"point")<<"; tau workers "<<workers<<" requested "<<_cpu_threads<<std::endl;
       auto build_vertices=[&](size_t q,const MatrixXcd& m) {
         std::vector<orbital_pair> pairs;
-        for(size_t k=0;k<_nk;++k)for(size_t kp=0;kp<_nk;++kp)if(_factors->transfer(k,kp)==q)
-          pairs.push_back({k,kp,tensors::thc_orbital_vertex(_factors->X(k),_factors->X(kp),m)});
+        for(const auto& pair:_pairs[q])
+          pairs.push_back({pair.first,pair.second,tensors::thc_orbital_vertex(_factors->X(pair.first),_factors->X(pair.second),m)});
         return pairs;
       };
       auto orbital_tau=[&](size_t t,const MatrixXcd& core,const std::vector<orbital_pair>& pairs) {
+        thc_cpu_component_timer timer(_profile?&_component_seconds:nullptr,"orbital_sigma");
         for(const auto& pair:pairs) {
           tensors::thc_vertex_matrix weighted=pair.v*core;
           for(size_t s=0;s<_ns;++s)
@@ -248,9 +293,9 @@ namespace green::mbpt::kernels {
         core.set_zero();frequency.set_zero();
         for(size_t t=0;t<_nt/2;++t) {
           MatrixXcd bubble=MatrixXcd::Zero(r,r);
-          for(size_t i=0;i<_nk;++i)for(size_t j=0;j<_nk;++j) {
+          for(const auto& pair:_bubble_pairs[q]) {
+            const size_t i=pair.second,j=pair.first;
             // Preserve the source-pair reversal and the plain transpose of G.
-            if(_factors->transfer(j,i)!=q)continue;
             for(size_t s=0;s<_ns;++s) {
               if(!projected_g.empty()) {
                 const auto& left=projected_g[((_nt-t-1)*_ns+s)*_nk+i];
@@ -276,6 +321,7 @@ namespace green::mbpt::kernels {
         return core;
       };
       auto project_time=[&](size_t t) {
+        thc_cpu_component_timer timer(_profile?&_component_seconds:nullptr,"streamed_projection");
         std::vector<MatrixXcd> values;
         if(projected_g.empty()) {
           values.reserve(_ns*_nk);
@@ -293,8 +339,9 @@ namespace green::mbpt::kernels {
       };
       auto accumulate=[&](size_t t,size_t q,const MatrixXcd& wc,const std::vector<MatrixXcd>& local,
                           std::vector<MatrixXcd>& point_sigma) {
-        for(size_t k=0;k<_nk;++k)for(size_t kp=0;kp<_nk;++kp) {
-          if(_factors->transfer(k,kp)!=q)continue;
+        thc_cpu_component_timer timer(_profile?&_component_seconds:nullptr,"sigma_hadamard");
+        for(const auto& pair:_pairs[q]) {
+          const size_t k=pair.first,kp=pair.second;
           for(size_t s=0;s<_ns;++s) {
             const auto& projected=projected_g.empty()?local[s*_nk+kp]:projected_g[(t*_ns+s)*_nk+kp];
             point_sigma[s*_nk+k]+=projected.cwiseProduct(wc)/double(_nk);
@@ -302,6 +349,7 @@ namespace green::mbpt::kernels {
         }
       };
       auto backproject=[&](size_t t,const std::vector<MatrixXcd>& point_sigma) {
+        thc_cpu_component_timer timer(_profile?&_component_seconds:nullptr,"sigma_backproject");
         for(size_t s=0;s<_ns;++s)for(size_t k=0;k<_nk;++k) {
           auto X=_factors->X(k);
           sigma_at(t,s,k)-=X.adjoint()*point_sigma[s*_nk+k]*X;
@@ -315,28 +363,36 @@ namespace green::mbpt::kernels {
           cores.emplace_back(_factors->M(q));
           response.emplace_back(_nt,1,Q,Q);response.back().set_zero();
         }
-        for(size_t t=0;t<_nt/2;++t) {
+        std::vector<std::complex<double>*> bubble_response_data;
+        for(auto& core:response)bubble_response_data.push_back(core.data());
+        parallel_tau(_nt/2,[&](size_t t) {
           // Stream just the two projected time slices when the full G cache
           // does not fit. Every owned q borrows these same complete k fields.
           auto left=project_time(_nt-t-1),right=project_time(t);
           for(size_t iq=0;iq<qs.size();++iq) {
             MatrixXcd bubble=MatrixXcd::Zero(r,r);
-            for(size_t i=0;i<_nk;++i)for(size_t j=0;j<_nk;++j) {
-              if(_factors->transfer(j,i)!=qs[iq])continue;
+            {
+            thc_cpu_component_timer timer(_profile?&_component_seconds:nullptr,"bubble_correlate");
+            for(const auto& pair:_bubble_pairs[qs[iq]]) {
+              const size_t i=pair.second,j=pair.first;
               for(size_t s=0;s<_ns;++s) {
                 const auto& first=projected_g.empty()?left[s*_nk+i]:projected_g[((_nt-t-1)*_ns+s)*_nk+i];
                 const auto& second=projected_g.empty()?right[s*_nk+j]:projected_g[(t*_ns+s)*_nk+j];
                 bubble-=(_ns==2?1.:2.)/double(_nk)*first.transpose().cwiseProduct(second);
               }
             }
+            }
+            thc_cpu_component_timer timer(_profile?&_component_seconds:nullptr,"bubble_compress");
             MatrixXcd compressed=cores[iq].adjoint()*bubble*cores[iq];
-            matrix(response[iq](t,0))=0.5*(compressed+compressed.adjoint()).eval();
-            matrix(response[iq](_nt-t-1,0))=matrix(response[iq](t,0));
+            MMatrixXcd current(bubble_response_data[iq]+t*Q*Q,Q,Q);
+            MMatrixXcd reflected(bubble_response_data[iq]+(_nt-t-1)*Q*Q,Q,Q);
+            current=0.5*(compressed+compressed.adjoint()).eval();reflected=current;
           }
-        }
+        });
         // Projected half-time fields are released before transform/LU scratch.
         // Cores and Q-space histories stay resident across these one-q solves.
         {
+          thc_cpu_component_timer timer(_profile?&_component_seconds:nullptr,"screen_transform_solve");
           ztensor<4> frequency(_nw,1,Q,Q);frequency.set_zero();
           for(auto& core:response) {
             _ft.tau_f_to_w_b(core,frequency,0,_nw,true);
@@ -359,7 +415,9 @@ namespace green::mbpt::kernels {
             } else {
               auto local=project_time(t),point_sigma=point_fields();
               for(size_t iq=0;iq<qs.size();++iq) {
-                MatrixXcd wc=cores[iq]*CMMatrixXcd(response_data[iq]+t*Q*Q,Q,Q)*cores[iq].adjoint();
+                MatrixXcd wc;
+                {thc_cpu_component_timer timer(_profile?&_component_seconds:nullptr,"sigma_expand");
+                  wc=cores[iq]*CMMatrixXcd(response_data[iq]+t*Q*Q,Q,Q)*cores[iq].adjoint();}
                 accumulate(t,qs[iq],wc,local,point_sigma);
               }
               backproject(t,point_sigma);
@@ -420,6 +478,10 @@ namespace green::mbpt::kernels {
     }
     size_t _n,_ns,_nk,_nt,_nw;
     bool _fft=false,_auxiliary=false,_orbital=false,_reuse_fft=true;
+    bool _profile=false;
+    std::map<std::string,double> _component_seconds;
+    std::vector<std::vector<std::pair<size_t,size_t>>> _pairs;
+    std::vector<std::vector<std::pair<size_t,size_t>>> _bubble_pairs;
     size_t _cpu_threads=1;
     std::vector<std::vector<orbital_pair>> _vertices;
     std::string _screening="auto";
