@@ -13,7 +13,8 @@ template <typename A>
 auto init_solver(const green::params::params p) {}
 
 int  main(int argc, char** argv) {
-  MPI_Init(&argc, &argv);
+  int thread_support=MPI_THREAD_SINGLE;
+  if(MPI_Init_thread(&argc,&argv,MPI_THREAD_FUNNELED,&thread_support)!=MPI_SUCCESS)return 2;
   green::utils::context();
   std::string hashes = std::string(GIT_HASHES);
   int         pos;

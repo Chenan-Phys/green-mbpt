@@ -7,7 +7,10 @@
 #include <iomanip>
 
 int main(int argc,char** argv) {
-  MPI_Init(&argc,&argv); green::utils::context();
+  int thread_support=MPI_THREAD_SINGLE;
+  if(MPI_Init_thread(&argc,&argv,MPI_THREAD_FUNNELED,&thread_support)!=MPI_SUCCESS)return 2;
+  green::utils::context();
+  if(!green::utils::context().global_rank)std::cout<<"Native THC probe MPI thread support="<<thread_support<<std::endl;
   int result=0;
   try {
     using namespace green::mbpt;

@@ -127,3 +127,6 @@ when using multiple THC tau workers, or use one tau worker with threaded BLAS.
 The workstation runner records both settings and MPI binding. Production libraries
 are untouched. Worker code borrows raw contiguous buffers through Eigen maps;
 it avoids ndarray slices because v1.0.0 storage reference counting is not atomic.
+MBPT, embedding and the frozen probe request `MPI_THREAD_FUNNELED` at startup.
+Library clients using more than one tau worker must initialize MPI with at least
+that support level; all MPI calls stay on the calling main thread after joins.

@@ -85,6 +85,11 @@ namespace green::mbpt::kernels {
       _reuse_fft=p["thc_fft_reuse_screening"].as<bool>();
       _cpu_threads=p["thc_cpu_threads"].as<size_t>();
       if(!_cpu_threads || _cpu_threads>64)throw std::runtime_error("thc_cpu_threads must be in 1..64");
+      if(_cpu_threads>1) {
+        int thread_support=MPI_THREAD_SINGLE;MPI_Query_thread(&thread_support);
+        if(thread_support<MPI_THREAD_FUNNELED)
+          throw std::runtime_error("thc_cpu_threads requires MPI_Init_thread with at least MPI_THREAD_FUNNELED");
+      }
       _vertices.resize(_factors->nq());
       if(_fft){tensors::thc_momentum_fft layout(*_factors);tensors::check_thc_fft_workspace(*_factors,_nt,_nw,_workspace_bytes,_auxiliary);}
       if(!utils::context().global_rank)std::cout<<"Native THC CPU GW momentum mode "<<(_fft?"host FFT":"direct sums")<<std::endl;
