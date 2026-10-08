@@ -77,9 +77,10 @@ namespace green::mbpt::kernels {
       _workspace_bytes=p["thc_workspace_mb"].as<size_t>()*1024*1024;
       _screening=p["thc_gw_screening"].as<std::string>();
       _auxiliary=tensors::thc_auxiliary_screening(_screening,r,NQ);
-      if(_fft){tensors::thc_momentum_fft layout(*_factors);tensors::check_thc_fft_workspace(*_factors,_nt,_nw,_workspace_bytes);}
+      if(_fft){tensors::thc_momentum_fft layout(*_factors);tensors::check_thc_fft_workspace(*_factors,_nt,_nw,_workspace_bytes,_auxiliary);}
       if(!utils::context().global_rank)std::cout<<"Native THC CPU GW momentum mode "<<(_fft?"host FFT":"direct sums")<<std::endl;
-      if(double(_nt+_nw)*r*r*16 > double(p["thc_workspace_mb"].as<size_t>())*1024*1024)
+      const double direct_elements=_auxiliary?auxiliary_scratch_elements():double(_nt+_nw)*r*r;
+      if(!_fft && direct_elements*sizeof(std::complex<double>)>double(_workspace_bytes))
         throw std::runtime_error("native THC GW tau/frequency workspace exceeds declared budget");
     }
 
@@ -93,6 +94,9 @@ namespace green::mbpt::kernels {
         if(_fft) {
           if(!ctx.internode_rank){tensors::thc_cpu_matrix_ops ops;tensors::thc_gw_fft_solve(*_factors,_ft,g.object(),sigma.object(),ops,_workspace_bytes,_screening);}
           utils::allreduce(MPI_IN_PLACE,sigma.object().data(),sigma.object().size(),MPI_C_DOUBLE_COMPLEX,MPI_SUM,ctx.internode_comm);
+        } else {
+        if(_auxiliary) {
+          solve_auxiliary_direct(g.object(),sigma.object(),ctx.internode_rank,ctx.internode_size);
         } else {
         // Cache complete projected G only when it fits beside the one-q arrays.
         // Streaming remains available for larger meshes/ranks under the same budget.
@@ -153,12 +157,157 @@ namespace green::mbpt::kernels {
             }
           }
         }
+        }
         utils::allreduce(MPI_IN_PLACE,sigma.object().data(),sigma.object().size(),MPI_C_DOUBLE_COMPLEX,MPI_SUM,ctx.internode_comm);
         }
       }
       sigma.fence();
     }
   private:
+    double auxiliary_scratch_elements() const {
+      const double r=_factors->rank(),Q=_factors->naux(),n=_n;
+      // One Q-space history/frequency transform, transform and LU temporaries,
+      // point bubble/projections, one expanded W slice and one copied M core.
+      // Source G/Sigma and loader-owned factors have separate ownership.
+      return (2.*_nt+2.*_nw+8)*Q*Q+12.*r*r+4.*r*Q+4.*r*n+2.*n*n;
+    }
+    void solve_auxiliary_direct(const ztensor<5>& g,ztensor<5>& sigma,size_t owner,size_t owners) {
+      const size_t r=_factors->rank(),Q=_factors->naux();
+      std::vector<size_t> qs;
+      for(size_t q=owner;q<_factors->nq();q+=owners)qs.push_back(q);
+      if(qs.empty())return;
+      const double rr=double(r)*r,budget=double(_workspace_bytes)/sizeof(std::complex<double>);
+      const double scratch=auxiliary_scratch_elements();
+      const double histories=double(qs.size())*(double(_nt)*Q*Q+double(r)*Q);
+      // At Sigma time t, projected G and point Sigma cover all local spins/k.
+      const double time_fields=(2.*_ns*_nk+2)*rr+2.*_nk*r*_n+2.*_nk*_n*_n;
+      const bool retain=histories+scratch+time_fields<=budget;
+      const bool time_batch=scratch+time_fields<=budget;
+      const double working=scratch+(time_batch?time_fields:0.)+(retain?histories:0.);
+      std::vector<MatrixXcd> projected_g;
+      if(working+double(_nt)*_ns*_nk*rr<=budget) {
+        projected_g.reserve(_nt*_ns*_nk);
+        for(size_t t=0;t<_nt;++t)for(size_t s=0;s<_ns;++s)for(size_t k=0;k<_nk;++k) {
+          auto X=_factors->X(k);
+          projected_g.emplace_back(X*matrix(g(t,s,k))*X.adjoint());
+        }
+      }
+      if(!utils::context().global_rank)std::cout<<"Native THC CPU projections "<<(projected_g.empty()?"streamed":"cached across q")
+        <<"; screening auxiliary dimension "<<Q<<"; histories "<<(retain?"owned q retained":"one q streamed")
+        <<"; Sigma "<<(retain?"owned q accumulated":time_batch?"one q accumulated":"one (spin,k) streamed")<<std::endl;
+      auto screen_q=[&](size_t q,const MatrixXcd& m) {
+        ztensor<4> core(_nt,1,Q,Q),frequency(_nw,1,Q,Q);
+        core.set_zero();frequency.set_zero();
+        for(size_t t=0;t<_nt/2;++t) {
+          MatrixXcd bubble=MatrixXcd::Zero(r,r);
+          for(size_t i=0;i<_nk;++i)for(size_t j=0;j<_nk;++j) {
+            // Preserve the source-pair reversal and the plain transpose of G.
+            if(_factors->transfer(j,i)!=q)continue;
+            for(size_t s=0;s<_ns;++s) {
+              if(!projected_g.empty()) {
+                const auto& left=projected_g[((_nt-t-1)*_ns+s)*_nk+i];
+                const auto& right=projected_g[(t*_ns+s)*_nk+j];
+                bubble-=(_ns==2?1.:2.)/double(_nk)*left.transpose().cwiseProduct(right);
+              } else {
+                auto Xi=_factors->X(i),Xj=_factors->X(j);
+                MatrixXcd left=Xi*matrix(g(_nt-t-1,s,i))*Xi.adjoint();
+                MatrixXcd right=Xj*matrix(g(t,s,j))*Xj.adjoint();
+                bubble-=(_ns==2?1.:2.)/double(_nk)*left.transpose().cwiseProduct(right);
+              }
+            }
+          }
+          // Sum spins before compression. M^H(.)M commutes with Hermitian
+          // symmetrization, and the reflected tau row is an exact copy.
+          MatrixXcd compressed=m.adjoint()*bubble*m;
+          matrix(core(t,0))=0.5*(compressed+compressed.adjoint()).eval();
+          matrix(core(_nt-t-1,0))=matrix(core(t,0));
+        }
+        _ft.tau_f_to_w_b(core,frequency,0,_nw,true);
+        for(size_t w=0;w<_nw;++w)matrix(frequency(w,0))=tensors::thc_screened_core(matrix(frequency(w,0)));
+        _ft.w_b_to_tau_f(frequency,core,0,_nt,true);
+        return core;
+      };
+      auto project_time=[&](size_t t) {
+        std::vector<MatrixXcd> values;
+        if(projected_g.empty()) {
+          values.reserve(_ns*_nk);
+          for(size_t s=0;s<_ns;++s)for(size_t k=0;k<_nk;++k) {
+            auto X=_factors->X(k);
+            values.emplace_back(X*matrix(g(t,s,k))*X.adjoint());
+          }
+        }
+        return values;
+      };
+      auto point_fields=[&]() {
+        std::vector<MatrixXcd> values;
+        for(size_t sk=0;sk<_ns*_nk;++sk)values.emplace_back(MatrixXcd::Zero(r,r));
+        return values;
+      };
+      auto accumulate=[&](size_t t,size_t q,const MatrixXcd& wc,const std::vector<MatrixXcd>& local,
+                          std::vector<MatrixXcd>& point_sigma) {
+        for(size_t k=0;k<_nk;++k)for(size_t kp=0;kp<_nk;++kp) {
+          if(_factors->transfer(k,kp)!=q)continue;
+          for(size_t s=0;s<_ns;++s) {
+            const auto& projected=projected_g.empty()?local[s*_nk+kp]:projected_g[(t*_ns+s)*_nk+kp];
+            point_sigma[s*_nk+k]+=projected.cwiseProduct(wc)/double(_nk);
+          }
+        }
+      };
+      auto backproject=[&](size_t t,const std::vector<MatrixXcd>& point_sigma) {
+        for(size_t s=0;s<_ns;++s)for(size_t k=0;k<_nk;++k) {
+          auto X=_factors->X(k);
+          matrix(sigma(t,s,k))-=X.adjoint()*point_sigma[s*_nk+k]*X;
+        }
+      };
+      if(retain) {
+        std::vector<MatrixXcd> cores;
+        std::vector<ztensor<4>> response;
+        cores.reserve(qs.size());response.reserve(qs.size());
+        for(size_t q:qs) {
+          cores.emplace_back(_factors->M(q));
+          response.emplace_back(screen_q(q,cores.back()));
+        }
+        for(size_t t=0;t<_nt;++t) {
+          auto local=project_time(t),point_sigma=point_fields();
+          for(size_t iq=0;iq<qs.size();++iq) {
+            MatrixXcd wc=cores[iq]*matrix(response[iq](t,0))*cores[iq].adjoint();
+            accumulate(t,qs[iq],wc,local,point_sigma);
+          }
+          // Every owned q/kp contribution is combined before this projection.
+          backproject(t,point_sigma);
+        }
+      } else {
+        // Bounded fallback: retain one q in Q space and combine its kp terms.
+        for(size_t q:qs) {
+          MatrixXcd m=_factors->M(q);
+          auto response=screen_q(q,m);
+          for(size_t t=0;t<_nt;++t) {
+            MatrixXcd wc=m*matrix(response(t,0))*m.adjoint();
+            if(time_batch) {
+              auto local=project_time(t),point_sigma=point_fields();
+              accumulate(t,q,wc,local,point_sigma);
+              backproject(t,point_sigma);
+            } else {
+              // The smallest budget also streams Sigma one (s,k) at a time.
+              for(size_t s=0;s<_ns;++s)for(size_t k=0;k<_nk;++k) {
+                MatrixXcd point_sigma=MatrixXcd::Zero(r,r);
+                for(size_t kp=0;kp<_nk;++kp) {
+                  if(_factors->transfer(k,kp)!=q)continue;
+                  if(!projected_g.empty())point_sigma+=projected_g[(t*_ns+s)*_nk+kp].cwiseProduct(wc)/double(_nk);
+                  else {
+                    auto Xp=_factors->X(kp);
+                    MatrixXcd projected=Xp*matrix(g(t,s,kp))*Xp.adjoint();
+                    point_sigma+=projected.cwiseProduct(wc)/double(_nk);
+                  }
+                }
+                auto X=_factors->X(k);
+                matrix(sigma(t,s,k))-=X.adjoint()*point_sigma*X;
+              }
+            }
+          }
+        }
+      }
+    }
     size_t _n,_ns,_nk,_nt,_nw;
     bool _fft=false,_auxiliary=false;
     std::string _screening="auto";

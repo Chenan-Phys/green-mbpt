@@ -1,6 +1,6 @@
 # THC evaluation modes
 
-Build with the pinned coordinated performance revisions of green-symmetry and
+Build with the pinned coordinated contraction-order revisions of green-symmetry and
 green-gpu. The standalone exporter is documented in green-mbtools/docs/thc.md.
 DF remains default, and is also selected by `--interaction_representation df`.
 Select THC explicitly with
@@ -26,6 +26,13 @@ including semidefinite Z. Auto selects the smaller dimension, Q or interpolation
 rank. Explicit alternatives allow numerical and timing comparisons. These
 screening flags require native THC GW.
 
+Auxiliary mode compresses the summed-spin half-tau bubble before the forward
+IR transform. Frequency screening and the inverse transform remain in Q space.
+It expands the correlation core only for the current tau and reuses it across
+spins. This reorders time-independent M through linear IR transforms without
+changing the factors, fit tolerance, or screening equation. The q-dependent M
+cannot be moved through momentum FFTs, whose fields remain in point space.
+
 `--thc_gw_k_contraction direct|fft` defaults to direct. Direct supports full-BZ
 inputs with validated transfer maps. FFT requires a complete Cartesian
 commensurate mesh; irregular/reduced inputs reject the explicit FFT option.
@@ -38,7 +45,11 @@ and keeps projection, transforms, screening and backprojection on the device.
 `thc_factor_memory_mb` (default 512 MiB) bounds resident host X/cores. The separate
 `thc_workspace_mb` (default 512 MiB) estimates CPU working matrices and caps owned
 GPU buffers. CPU direct caches projected G across q when the declared budget
-allows, otherwise streams it; FFT retains all-q Wc. GPU direct uses bounded
+allows, otherwise streams it. Auxiliary direct retains owned-q Q-space histories
+when possible and accumulates point Sigma over q before one orbital
+backprojection per (tau,spin,k). Bounded alternatives stream one q, then one
+(spin,k) Sigma field. FFT retains all-q histories in the selected screening
+space and expands current-tau slices. GPU direct uses bounded
 q tiles and FFT requires all q to fit. CPU library scratch, CUDA contexts and
 library-owned allocations are additional; report process memory separately.
 Low GPU memory trims idle buffers at stage boundaries while retaining within-stage

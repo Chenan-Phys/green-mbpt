@@ -7,7 +7,10 @@ int main(){
     using gpu=green::gpu::thc_gpu_resident;
     using matrix=gpu::matrix;
     double maximum=0;
-    auto compare=[&](const matrix& a,const matrix& b){maximum=std::max(maximum,(a-b).cwiseAbs().maxCoeff());};
+    auto compare=[&](const matrix& a,const matrix& b){
+      if(!a.allFinite() || !b.allFinite())throw std::runtime_error("nonfinite CUDA oracle matrix");
+      maximum=std::max(maximum,(a-b).cwiseAbs().maxCoeff());
+    };
     auto values=[](size_t rows,size_t cols,double shift){
       matrix result(rows,cols);
       for(size_t i=0;i<rows;++i)for(size_t j=0;j<cols;++j)result(i,j)={std::sin(i*.3+j*.7+shift)*.03,std::cos(i*.4-j*.2+shift)*.02};
@@ -15,7 +18,7 @@ int main(){
     };
     for(bool low:{true,false}){
       gpu ops(low,64ul*1024*1024);
-      for(auto dims:std::vector<std::pair<size_t,size_t>>{{5,9},{40,4}}){
+      for(auto dims:std::vector<std::pair<size_t,size_t>>{{5,9},{270,4}}){
         auto m=values(dims.first,dims.second,.1);matrix Z=m*m.adjoint();
         std::vector<matrix> response;
         for(size_t w=0;w<3;++w)response.emplace_back(values(dims.first,dims.first,.4+w));
@@ -23,6 +26,47 @@ int main(){
         for(bool auxiliary:{false,true}){
           auto output=ops.download(ops.screen(dm,dp,auxiliary));
           for(size_t w=0;w<3;++w)compare(output[w],green::tensors::thc_screened_correlation(m,Z,response[w],false));
+        }
+      }
+      // Exercise the enlarged batched-LU boundary independently of THC data.
+      for(size_t d:{64ul,150ul,256ul}){
+        gpu batched(low,512ul*1024*1024);
+        std::vector<matrix> polarizations;
+        for(size_t w=0;w<32;++w){matrix seed=values(d,8,.2+w);polarizations.emplace_back(-seed*seed.adjoint());}
+        auto actual=batched.download(batched.screen_core(batched.upload(polarizations)));
+        for(size_t w=0;w<32;++w)compare(actual[w],green::tensors::thc_screened_core(polarizations[w]));
+        bool singular=false;
+        try{batched.screen_core(batched.upload(std::vector<matrix>(32,matrix::Identity(d,d))));}
+        catch(const std::runtime_error& e){singular=std::string(e.what()).find("singular/invalid LU")!=std::string::npos;}
+        if(!singular)throw std::runtime_error("batched singular LU was not rejected");
+      }
+      for(auto dims:std::vector<std::pair<size_t,size_t>>{{5,3},{3,5}}){
+        const size_t r=dims.first,Q=dims.second,nt=6,nw=4;
+        matrix m=values(r,Q,.1),Z=m*m.adjoint();
+        matrix forward=values(nt,nw,.2),backward=values(nw,nt,.3);
+        auto dm=ops.upload(m),history=ops.allocate(r,r,nt,true);
+        std::vector<matrix> tau(nt),point_w(nw);
+        for(size_t t=0;t<nt/2;++t){
+          matrix raw=values(r,r,.4+t);tau[t]=.5*(raw+raw.adjoint()).eval();tau[nt-t-1]=tau[t];
+          auto raw_device=ops.upload(raw);ops.symmetrize(raw_device);
+          ops.accumulate_time(history,raw_device,t,nt,1.);ops.mirror_time(history,t,nt);
+        }
+        auto actual_tau=ops.download(history);
+        for(size_t t=0;t<nt;++t)compare(actual_tau[t],tau[t]);
+        auto compressed=ops.compress(dm,history);
+        auto frequency=ops.multiply(compressed.reshape(Q*Q,nt),ops.upload(forward)).reshape(Q,Q,nw);
+        auto core=ops.screen_core(frequency);
+        auto core_tau=ops.multiply(core.reshape(Q*Q,nw),ops.upload(backward)).reshape(Q,Q,nt);
+        auto actual=ops.download(ops.expand(dm,core_tau));
+        for(size_t w=0;w<nw;++w){
+          matrix response=matrix::Zero(r,r);
+          for(size_t t=0;t<nt;++t)response+=forward(t,w)*tau[t];
+          point_w[w]=green::tensors::thc_screened_correlation(m,Z,response,false);
+        }
+        for(size_t t=0;t<nt;++t){
+          matrix expected=matrix::Zero(r,r);
+          for(size_t w=0;w<nw;++w)expected+=backward(w,t)*point_w[w];
+          compare(actual[t],expected);
         }
       }
       const size_t nk=6,r=3;
@@ -60,7 +104,7 @@ int main(){
     }
     bool rejected=false;
     try{gpu tiny(true,1024);tiny.allocate(16,16);}catch(const std::runtime_error&){rejected=true;}
-    std::cout<<"Resident THC complex projection/screening/shifted anisotropic cuFFT error="<<maximum<<", budget_rejected="<<rejected<<std::endl;
+    std::cout<<"Resident THC complex projection/screening/IR core reorder/shifted anisotropic cuFFT error="<<maximum<<", budget_rejected="<<rejected<<std::endl;
     return maximum>1e-11 || !rejected;
   }catch(const std::exception& e){std::cerr<<e.what()<<std::endl;return 2;}
 }

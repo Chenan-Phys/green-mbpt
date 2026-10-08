@@ -33,9 +33,45 @@ int main() {
       for(size_t iq=0;iq<nk;++iq)for(size_t kp=0;kp<nk;++kp)if(difference(kp,i,iq))direct+=a[kp].cwiseProduct(b[iq])/double(nk);
       error=std::max(error,(direct-sigma[i]).cwiseAbs().maxCoeff());
     }
+    // An independent point-space Dyson solve checks the deferred auxiliary
+    // expansion for complex rectangular M and complex linear time transforms.
+    // Include Q>r as well as Q<r so this does not rely on a square/real core.
+    for(auto dims:std::vector<std::pair<size_t,size_t>>{{5,3},{3,5}}) {
+      const size_t r=dims.first,Q=dims.second,nt=6,nw=4;
+      auto values=[](size_t rows,size_t cols,double shift) {
+        thc_matrix result(rows,cols);
+        for(size_t i=0;i<rows;++i)for(size_t j=0;j<cols;++j)
+          result(i,j)={.03*std::sin(.3*i+.7*j+shift),.02*std::cos(.4*i-.2*j+shift)};
+        return result;
+      };
+      thc_matrix m=values(r,Q,.1),Z=m*m.adjoint(),forward=values(nw,nt,.2),backward=values(nt,nw,.3);
+      std::vector<thc_matrix> tau(nt),compressed(nt),point_w(nw),core_w(nw);
+      for(size_t t=0;t<nt/2;++t) {
+        thc_matrix raw=values(r,r,.4+t),P=m.adjoint()*raw*m;
+        tau[t]=.5*(raw+raw.adjoint()).eval();
+        compressed[t]=.5*(P+P.adjoint()).eval();
+        tau[nt-t-1]=tau[t];compressed[nt-t-1]=compressed[t];
+        thc_matrix expected=m.adjoint()*tau[t]*m;
+        if(!compressed[t].allFinite() || !expected.allFinite())throw std::runtime_error("nonfinite compressed IR oracle");
+        error=std::max(error,(compressed[t]-expected).cwiseAbs().maxCoeff());
+      }
+      for(size_t w=0;w<nw;++w) {
+        thc_matrix response=thc_matrix::Zero(r,r),P=thc_matrix::Zero(Q,Q);
+        for(size_t t=0;t<nt;++t){response+=forward(w,t)*tau[t];P+=forward(w,t)*compressed[t];}
+        point_w[w]=thc_screened_correlation(m,Z,response,false);
+        core_w[w]=thc_screened_core(P);
+      }
+      for(size_t t=0;t<nt;++t) {
+        thc_matrix point_tau=thc_matrix::Zero(r,r),core_tau=thc_matrix::Zero(Q,Q);
+        for(size_t w=0;w<nw;++w){point_tau+=backward(t,w)*point_w[w];core_tau+=backward(t,w)*core_w[w];}
+        thc_matrix expected=m*core_tau*m.adjoint();
+        if(!point_tau.allFinite() || !expected.allFinite())throw std::runtime_error("nonfinite expanded IR oracle");
+        error=std::max(error,(point_tau-expected).cwiseAbs().maxCoeff());
+      }
+    }
     bool rejected=false;auto bad=k;bad[3]+=.01;
     try{thc_momentum_fft invalid(bad,q,nk);}catch(const std::exception&){rejected=true;}
-    std::cout<<"THC anisotropic shuffled shifted complex correlation error="<<error<<" irregular_rejected="<<rejected<<std::endl;
+    std::cout<<"THC anisotropic shuffled shifted correlation/complex IR core reorder error="<<error<<" irregular_rejected="<<rejected<<std::endl;
     return error>1e-12 || !rejected;
   }catch(const std::exception& e){std::cerr<<e.what()<<std::endl;return 2;}
 }
