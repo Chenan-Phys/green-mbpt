@@ -239,6 +239,10 @@ namespace green::mbpt {
 
   inline void check_input(const params::params& p) {
     auto thc_options=integrals::thc_options(p);
+    const auto screening=p["thc_gw_screening"].as<std::string>();
+    tensors::thc_auxiliary_screening(screening,1,1);
+    if(screening!="auto" && (!thc_options.enabled || p["thc_mode"].as<std::string>()!="native" || p["scf_type"].as<scf_type>()!=GW))
+      throw std::runtime_error("Explicit THC screening space requires native THC GW");
     const auto momentum_mode=p["thc_gw_k_contraction"].as<std::string>();
     if(momentum_mode!="direct" && momentum_mode!="fft")throw std::runtime_error("thc_gw_k_contraction must be direct or fft");
     if(momentum_mode=="fft" && (!thc_options.enabled || p["thc_mode"].as<std::string>()!="native" || p["scf_type"].as<scf_type>()!=GW))

@@ -1,47 +1,56 @@
 # THC evaluation modes
 
-Build against the pinned coordinated THC green-symmetry revision. Enable GPU
-with the coordinated green-gpu revision. Existing no-flag DF remains default.
-The standalone Python exporter is documented in green-mbtools/docs/thc.md.
+Build with the pinned coordinated performance revisions of green-symmetry and
+green-gpu. The standalone exporter is documented in green-mbtools/docs/thc.md.
+DF remains default, and is also selected by `--interaction_representation df`.
+Select THC explicitly with
+`--interaction_representation thc --thc_mode reconstruct|native`.
+No automatic DF/THC performance crossover is assumed.
 
-Explicit flags: `--interaction_representation thc --thc_mode reconstruct|native`.
-`thc_factor_memory_mb` bounds resident X/cores; `thc_workspace_mb` bounds the
-native HF matrix estimate and GW tau/frequency arrays. Additional projection, linear solve and
-transform scratch exists. Both default to 512 MiB. Archive input fingerprints
+Reconstruction supplies original-Q slices to existing HF/GW/GF2 contractions.
+It preserves raw representative-buffer ordering for GF2 corrections. GPU GF2
+selection means GPU HF and CPU GF2 correlation. Archive input fingerprints
 must match the exact one-body input file; retain original NQ.
 
-Reconstruction uses original-Q slices with existing HF/GW/GF2 contractions.
-It preserves the raw representative-buffer ordering used by GF2 corrections.
-GF2 with kernel GPU means GPU HF and CPU GF2 correlation.
+Native scalar full-BZ double HF/GW projects density/G into interpolation space
+and backprojects without reconstructing V. HF preserves spin factors, separate
+Madelung correction and unconjugated q0 Hartree ordering `M M^T`. GW retains the
+legacy response q sign, transposed point-space bubble and original IR transforms.
+It computes correlation-only Wc without inverting a potentially singular Z or
+adding constant-tau bare Z.
 
-Native scalar full-BZ double-precision HF/GW projects G/density into point
-space and backprojects there, without reconstructing V. HF preserves spin
-factors and the separate Madelung term. The bare q0 Hartree uses M M^T to
-preserve GREEN's unconjugated auxiliary ordering. GW uses the legacy response
-q sign (opposite the source pair q), transposed point-space bubble, existing
-tau/frequency transforms, and solves `(1-Z chi) Wc=Z chi Z` by pivoted LU.
-It never inserts a constant-tau bare Z or inverts a singular Z. Native q tasks
-are scheduled independently of Gaussian-Q partitioning. Initially one node
-leader handles each node's assigned q tasks.
+`--thc_gw_screening auto|point|auxiliary` defaults to auto. Point space solves
+`(I-Z chi) Wc=Z chi Z`, with `Z=M M^H`. Auxiliary space solves
+`P=M^H chi M; (I-P) C=P; Wc=M C M^H`. The latter is an exact algebraic identity,
+including semidefinite Z. Auto selects the smaller dimension, Q or interpolation
+rank. Explicit alternatives allow numerical and timing comparisons. These
+screening flags require native THC GW.
 
-Unsupported modes reject explicitly: native GF2; native IBZ/TR/spatial
-reduction; spinors; native single precision; extrapolation/AqQ.
-Reconstruction covariance is checked before export.
+`--thc_gw_k_contraction direct|fft` defaults to direct. Direct supports full-BZ
+inputs with validated transfer maps. FFT requires a complete Cartesian
+commensurate mesh; irregular/reduced inputs reject the explicit FFT option.
+The shared mapper preserves shifted cosets, shuffled ordering, actual Bloch
+phases and negative-index complex correlation without a second-field conjugate.
+CPU uses cached batched FFTW plans when available, with Eigen fallback.
+`-DGREEN_THC_USE_FFTW=OFF` forces that portable fallback. Native GPU uses cuFFT
+and keeps projection, transforms, screening and backprojection on the device.
 
-`--thc_gw_k_contraction direct|fft` defaults to direct. FFT requires native GW
-on a complete Cartesian commensurate k/q mesh; irregular/reduced meshes reject
-the explicit FFT option. Use direct sums for other supported inputs. Shifted
-k meshes are embedded as cosets: actual Bloch values carry the phases. Complex
-correlations use the negative Fourier index without conjugating the second
-field. Host FFTs are shared by CPU and GPU consumers. They retain all-q Wc(tau)
-under a conservative workspace check; direct mode retains one q at a time.
-The initial FFT schedule executes on the first node leader and reduces Sigma
-over node leaders. Multi-node scaling is not established by same-host MPI tests.
-Tests cover shuffled shifted anisotropic meshes, physical direct/FFT agreement,
-both CPU/GPU consumers and both host/device memory flags. HF remains direct;
-point-space symmetry and low-memory distributed FFTs are separate work.
+`thc_factor_memory_mb` (default 512 MiB) bounds resident host X/cores. The separate
+`thc_workspace_mb` (default 512 MiB) estimates CPU working matrices and caps owned
+GPU buffers. CPU direct caches projected G across q when the declared budget
+allows, otherwise streams it; FFT retains all-q Wc. GPU direct uses bounded
+q tiles and FFT requires all q to fit. CPU library scratch, CUDA contexts and
+library-owned allocations are additional; report process memory separately.
+Low GPU memory trims idle buffers at stage boundaries while retaining within-stage
+reuse. An allocation check leaves 512 MiB of physical GPU headroom.
 
-The MPI probes in test/ validate CPU/GPU-host original-Q slices and frozen
-one-body G across all supported methods/modes. They refuse output reuse.
-`thc_frozen_probe` uses GREEN's physical tau sample values directly. Use fresh
-run directories for self-consistency; two iterations establish agreement only.
+Native q tasks use node leaders independently of Gaussian-Q partitioning.
+FFT executes on the first node leader and reduces Sigma. Same-host MPI correctness
+does not establish multi-node scaling. Native GF2, IBZ/TR/spatial reduction,
+spinors, single precision and extrapolation/AqQ reject explicitly. HF stays
+direct; point-space symmetry and distributed FFTs remain separate work.
+
+The test probes validate original-Q slices and frozen physical G, and refuse
+output reuse. `thc_frozen_probe` records HF and GW stage times. Use fresh directories
+for self-consistency; two iterations establish agreement, not convergence.
+Benchmark DF and THC at the needed accuracy on the intended basis and mesh.

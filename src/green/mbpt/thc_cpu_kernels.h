@@ -75,6 +75,8 @@ namespace green::mbpt::kernels {
       const size_t r=_factors->rank();
       _fft=p["thc_gw_k_contraction"].as<std::string>()=="fft";
       _workspace_bytes=p["thc_workspace_mb"].as<size_t>()*1024*1024;
+      _screening=p["thc_gw_screening"].as<std::string>();
+      _auxiliary=tensors::thc_auxiliary_screening(_screening,r,NQ);
       if(_fft){tensors::thc_momentum_fft layout(*_factors);tensors::check_thc_fft_workspace(*_factors,_nt,_nw,_workspace_bytes);}
       if(!utils::context().global_rank)std::cout<<"Native THC CPU GW momentum mode "<<(_fft?"host FFT":"direct sums")<<std::endl;
       if(double(_nt+_nw)*r*r*16 > double(p["thc_workspace_mb"].as<size_t>())*1024*1024)
@@ -89,13 +91,27 @@ namespace green::mbpt::kernels {
       // Interpolation I is never partitioned by the old Gaussian-Q schedule.
       if(!ctx.node_rank) {
         if(_fft) {
-          if(!ctx.internode_rank){tensors::thc_cpu_matrix_ops ops;tensors::thc_gw_fft_solve(*_factors,_ft,g.object(),sigma.object(),ops,_workspace_bytes);}
+          if(!ctx.internode_rank){tensors::thc_cpu_matrix_ops ops;tensors::thc_gw_fft_solve(*_factors,_ft,g.object(),sigma.object(),ops,_workspace_bytes,_screening);}
           utils::allreduce(MPI_IN_PLACE,sigma.object().data(),sigma.object().size(),MPI_C_DOUBLE_COMPLEX,MPI_SUM,ctx.internode_comm);
         } else {
+        // Cache complete projected G only when it fits beside the one-q arrays.
+        // Streaming remains available for larger meshes/ranks under the same budget.
+        std::vector<MatrixXcd> projected_g;
+        const double cache_bytes=double(_nt*_ns*_nk+_nt+_nw+12)*r*r*16;
+        if(cache_bytes<=double(_workspace_bytes)) {
+          projected_g.reserve(_nt*_ns*_nk);
+          for(size_t t=0;t<_nt;++t)for(size_t s=0;s<_ns;++s)for(size_t k=0;k<_nk;++k) {
+            auto X=_factors->X(k);
+            projected_g.emplace_back(X*matrix(g.object()(t,s,k))*X.adjoint());
+          }
+        }
+        if(!ctx.global_rank)std::cout<<"Native THC CPU projections "<<(projected_g.empty()?"streamed":"cached across q")
+          <<"; screening "<<(_auxiliary?"auxiliary":"point")<<" dimension "<<(_auxiliary?_factors->naux():r)<<std::endl;
         for(size_t q=ctx.internode_rank;q<_factors->nq();q+=ctx.internode_size) {
           ztensor<4> chi(_nt,1,r,r),wc_w(_nw,1,r,r);
           chi.set_zero(); wc_w.set_zero();
-          MatrixXcd Z=_factors->Z(q);
+          MatrixXcd m=_factors->M(q),Z;
+          if(!_auxiliary)Z=m*m.adjoint();
           for(size_t t=0;t<_nt/2;++t) {
             MatrixXcd bubble=MatrixXcd::Zero(r,r);
             for(size_t i=0;i<_nk;++i) for(size_t j=0;j<_nk;++j) {
@@ -104,34 +120,36 @@ namespace green::mbpt::kernels {
               if(_factors->transfer(j,i)!=q) continue;
               for(size_t s=0;s<_ns;++s) {
                 auto Xi=_factors->X(i),Xj=_factors->X(j);
-                MatrixXcd left=Xi*matrix(g.object()(_nt-t-1,s,i))*Xi.adjoint();
-                MatrixXcd right=Xj*matrix(g.object()(t,s,j))*Xj.adjoint();
                 // P0_QR in GREEN is the transpose of the declared trace oracle.
                 // Pair reversal changes M_plus to conj(M_minus), so chi^T is used.
-                bubble -= (_ns==2?1.0:2.0)/double(_nk)*left.transpose().cwiseProduct(right);
+                if(!projected_g.empty()) {
+                  const auto& left=projected_g[((_nt-t-1)*_ns+s)*_nk+i];
+                  const auto& right=projected_g[(t*_ns+s)*_nk+j];
+                  bubble -= (_ns==2?1.0:2.0)/double(_nk)*left.transpose().cwiseProduct(right);
+                }else {
+                  MatrixXcd left=Xi*matrix(g.object()(_nt-t-1,s,i))*Xi.adjoint();
+                  MatrixXcd right=Xj*matrix(g.object()(t,s,j))*Xj.adjoint();
+                  bubble -= (_ns==2?1.0:2.0)/double(_nk)*left.transpose().cwiseProduct(right);
+                }
               }
             }
             matrix(chi(t,0))=0.5*(bubble+bubble.adjoint()).eval();
             matrix(chi(_nt-t-1,0))=matrix(chi(t,0));
           }
           _ft.tau_f_to_w_b(chi,wc_w,0,_nw,true);
-          MatrixXcd identity=MatrixXcd::Identity(r,r);
           for(size_t w=0;w<_nw;++w) {
             MatrixXcd response=matrix(wc_w(w,0));
-            MatrixXcd A=identity-Z*response,rhs=Z*response*Z;
-            Eigen::PartialPivLU<MatrixXcd> solver(A);
-            MatrixXcd wc=solver.solve(rhs);
-            const double residual=(A*wc-rhs).norm()/std::max(1.0,rhs.norm());
-            if(!wc.allFinite() || residual>1e-9) throw std::runtime_error("native THC frequency screening solve failed");
-            matrix(wc_w(w,0))=wc;
+            matrix(wc_w(w,0))=tensors::thc_screened_correlation(m,Z,response,_auxiliary);
           }
           _ft.w_b_to_tau_f(wc_w,chi,0,_nt,true);
           for(size_t k=0;k<_nk;++k) for(size_t kp=0;kp<_nk;++kp) {
             if(_factors->transfer(k,kp)!=q) continue;
             auto X=_factors->X(k),Xp=_factors->X(kp);
             for(size_t t=0;t<_nt;++t) for(size_t s=0;s<_ns;++s) {
-              MatrixXcd projected=Xp*matrix(g.object()(t,s,kp))*Xp.adjoint();
-              matrix(sigma.object()(t,s,k)) -= X.adjoint()*projected.cwiseProduct(matrix(chi(t,0)))*X/double(_nk);
+              MatrixXcd temporary;const MatrixXcd* projected=nullptr;
+              if(!projected_g.empty())projected=&projected_g[(t*_ns+s)*_nk+kp];
+              else {temporary=Xp*matrix(g.object()(t,s,kp))*Xp.adjoint();projected=&temporary;}
+              matrix(sigma.object()(t,s,k)) -= X.adjoint()*projected->cwiseProduct(matrix(chi(t,0)))*X/double(_nk);
             }
           }
         }
@@ -142,7 +160,8 @@ namespace green::mbpt::kernels {
     }
   private:
     size_t _n,_ns,_nk,_nt,_nw;
-    bool _fft=false;
+    bool _fft=false,_auxiliary=false;
+    std::string _screening="auto";
     size_t _workspace_bytes=0;
     const grids::transformer_t& _ft;
     std::shared_ptr<integrals::thc_factor_data> _factors;

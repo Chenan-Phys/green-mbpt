@@ -1,6 +1,6 @@
 
 function(add_green_kernel CUSTOM_KERNELS_IN)
-    set(GREEN_GPU_REVISION "a8bdfca9f485be5d1ff4535eb61d0caeb7d585a1" CACHE STRING "Coordinated THC GPU revision")
+    set(GREEN_GPU_REVISION "7bfb166dadc5ca5d85f69ae21c8f7b8e820da68b" CACHE STRING "Coordinated THC GPU revision")
     set(CUSTOM_KERNELS_TMP "${CUSTOM_KERNELS_IN}")
     set(CUSTOM_KERNELS_LST "")
     foreach(KERNEL ${CUSTOM_KERNELS_TMP})
