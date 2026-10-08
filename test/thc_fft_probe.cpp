@@ -1,4 +1,5 @@
 #include <green/tensors/thc_gw_fft.h>
+#include <green/tensors/thc_sigma_orbital.h>
 #include <iostream>
 
 int main() {
@@ -23,6 +24,15 @@ int main() {
       return true;
     };
     double error=0;
+    {
+      thc_momentum_fft shared(k,q,nk);
+      auto right=shared.prepare_right(b);
+      for(size_t spin=0;spin<2;++spin) {
+        auto result=shared.correlate_prepared(a,right);
+        for(size_t i=0;i<nk;++i)error=std::max(error,(result[i]-sigma[i]).cwiseAbs().maxCoeff());
+      }
+      if(shared.fft_calls()!=5)throw std::runtime_error("screening FFT was not shared across spins");
+    }
     for(size_t iq=0;iq<nk;++iq) {
       thc_matrix direct=thc_matrix::Zero(2,2);
       for(size_t i=0;i<nk;++i)for(size_t j=0;j<nk;++j)if(difference(i,j,iq))direct+=a[i].cwiseProduct(b[j])/double(nk);
@@ -45,6 +55,17 @@ int main() {
         return result;
       };
       thc_matrix m=values(r,Q,.1),Z=m*m.adjoint(),forward=values(nw,nt,.2),backward=values(nt,nw,.3);
+      {
+        const size_t n=4;
+        thc_matrix x=10.*values(r,n,.7),xp=10.*values(r,n,.9),g=10.*values(n,n,.2),c=10.*values(Q,Q,.8);
+        auto v=thc_orbital_vertex(x,xp,m);
+        thc_matrix weighted=v*c;
+        thc_matrix actual=thc_orbital_sigma_weighted(v,weighted,g);
+        thc_matrix wc=m*c*m.adjoint(),pg=xp*g*xp.adjoint();
+        thc_matrix expected=x.adjoint()*pg.cwiseProduct(wc)*x;
+        if(!actual.allFinite() || !expected.allFinite())throw std::runtime_error("nonfinite orbital Sigma oracle");
+        error=std::max(error,(actual-expected).cwiseAbs().maxCoeff());
+      }
       std::vector<thc_matrix> tau(nt),compressed(nt),point_w(nw),core_w(nw);
       for(size_t t=0;t<nt/2;++t) {
         thc_matrix raw=values(r,r,.4+t),P=m.adjoint()*raw*m;

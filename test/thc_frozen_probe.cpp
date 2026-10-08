@@ -15,7 +15,10 @@ int main(int argc,char** argv) {
     green::sc::define_parameters(p); green::grids::define_parameters(p);
     green::symmetry::define_parameters(p); define_parameters(p);
     p.define<std::string>("probe_output","New output HDF5 file");
+    p.define<size_t>("probe_iterations","Repeated GW calls on one kernel to verify cache reuse",1);
     if(!p.parse(argc,argv)) throw std::runtime_error("probe parameters missing");
+    if(!p["probe_iterations"].as<size_t>() || p["probe_iterations"].as<size_t>()>8)
+      throw std::runtime_error("probe_iterations must be in 1..8");
     check_input(p);
     green::symmetry::brillouin_zone_utils bz(p);
     green::grids::transformer_t ft(p);
@@ -61,7 +64,13 @@ int main(int argc,char** argv) {
     before=std::chrono::steady_clock::now();
     if(p["scf_type"].as<scf_type>()==GW) {
       auto [gwowner,gw]=kernels::gw_kernel_factory::get_kernel(false,p,n,n,ns,NQ,ft,bz,S);
-      gw(g,sigma);
+      for(size_t iteration=0;iteration<p["probe_iterations"].as<size_t>();++iteration) {
+        auto iteration_before=std::chrono::steady_clock::now();
+        gw(g,sigma);
+        if(p["probe_iterations"].as<size_t>()>1 && !green::utils::context().global_rank)
+          std::cout<<std::setprecision(17)<<"Native THC probe iteration "<<iteration<<" seconds="
+            <<std::chrono::duration<double>(std::chrono::steady_clock::now()-iteration_before).count()<<std::endl;
+      }
     } else if(p["scf_type"].as<scf_type>()==GF2) {
       gf2_solver gf2(p,ft,bz); gf2.solve(g,static_sigma,sigma);
     } else {

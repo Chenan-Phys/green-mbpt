@@ -5,6 +5,8 @@
 #include <green/integrals/thc_factor_data.h>
 #include <Eigen/LU>
 #include <green/tensors/thc_gw_fft.h>
+#include <green/tensors/thc_sigma_orbital.h>
+#include <exception>
 
 namespace green::mbpt::kernels {
   inline void native_thc_scope(const params::params& p,bool X2C,const symmetry::brillouin_zone_utils& bz) {
@@ -77,6 +79,14 @@ namespace green::mbpt::kernels {
       _workspace_bytes=p["thc_workspace_mb"].as<size_t>()*1024*1024;
       _screening=p["thc_gw_screening"].as<std::string>();
       _auxiliary=tensors::thc_auxiliary_screening(_screening,r,NQ);
+      _orbital=tensors::thc_sigma_orbital(p["thc_gw_sigma"].as<std::string>(),_n,r,NQ,_nk,_ns,_auxiliary,!_fft);
+      _reuse_fft=p["thc_fft_reuse_screening"].as<bool>();
+      _cpu_threads=p["thc_cpu_threads"].as<size_t>();
+      if(!_cpu_threads || _cpu_threads>64)throw std::runtime_error("thc_cpu_threads must be in 1..64");
+#ifndef _OPENMP
+      if(_cpu_threads!=1)throw std::runtime_error("thc_cpu_threads requires an OpenMP build");
+#endif
+      _vertices.resize(_factors->nq());
       if(_fft){tensors::thc_momentum_fft layout(*_factors);tensors::check_thc_fft_workspace(*_factors,_nt,_nw,_workspace_bytes,_auxiliary);}
       if(!utils::context().global_rank)std::cout<<"Native THC CPU GW momentum mode "<<(_fft?"host FFT":"direct sums")<<std::endl;
       const double direct_elements=_auxiliary?auxiliary_scratch_elements():double(_nt+_nw)*r*r;
@@ -92,7 +102,7 @@ namespace green::mbpt::kernels {
       // Interpolation I is never partitioned by the old Gaussian-Q schedule.
       if(!ctx.node_rank) {
         if(_fft) {
-          if(!ctx.internode_rank){tensors::thc_cpu_matrix_ops ops;tensors::thc_gw_fft_solve(*_factors,_ft,g.object(),sigma.object(),ops,_workspace_bytes,_screening);}
+          if(!ctx.internode_rank){tensors::thc_cpu_matrix_ops ops;tensors::thc_gw_fft_solve(*_factors,_ft,g.object(),sigma.object(),ops,_workspace_bytes,_screening,_reuse_fft);}
           utils::allreduce(MPI_IN_PLACE,sigma.object().data(),sigma.object().size(),MPI_C_DOUBLE_COMPLEX,MPI_SUM,ctx.internode_comm);
         } else {
         if(_auxiliary) {
@@ -164,6 +174,7 @@ namespace green::mbpt::kernels {
       sigma.fence();
     }
   private:
+    struct orbital_pair {size_t k,kp;tensors::thc_vertex_matrix v;};
     double auxiliary_scratch_elements() const {
       const double r=_factors->rank(),Q=_factors->naux(),n=_n;
       // One Q-space history/frequency transform, transform and LU temporaries,
@@ -177,16 +188,24 @@ namespace green::mbpt::kernels {
       for(size_t q=owner;q<_factors->nq();q+=owners)qs.push_back(q);
       if(qs.empty())return;
       const double rr=double(r)*r,budget=double(_workspace_bytes)/sizeof(std::complex<double>);
-      const double scratch=auxiliary_scratch_elements();
+      const double vertex_scratch=_orbital?double(_n)*_n*(r+6.*Q):0.;
+      const double vertex_cache=_orbital?double(qs.size())*_nk*_n*_n*Q:0.;
+      const double scratch=auxiliary_scratch_elements()+vertex_scratch;
       const double histories=double(qs.size())*(double(_nt)*Q*Q+double(r)*Q);
       // The same allowance holds either both projected half-time G slices for
       // the bubble, or projected G plus point Sigma at one time, over spins/k.
       const double time_fields=(2.*_ns*_nk+2)*rr+2.*_nk*r*_n+2.*_nk*_n*_n;
-      const bool retain=histories+scratch+time_fields<=budget;
-      const bool time_batch=scratch+time_fields<=budget;
-      const double working=scratch+(time_batch?time_fields:0.)+(retain?histories:0.);
+      const bool retain=histories+scratch+time_fields+vertex_cache<=budget;
+      const double one_vertex=_orbital?double(_nk)*_n*_n*Q:0.;
+      const bool time_batch=scratch+time_fields+one_vertex<=budget;
+      const double per_worker=_orbital?double(_n)*_n*(6.*Q+2.*_ns*_nk):time_fields+4.*rr+2.*r*Q;
+      const double base_working=scratch+(time_batch?time_fields:0.)+(retain?histories+vertex_cache:one_vertex);
+      if(!retain && _orbital && scratch+double(_nk)*_n*_n*Q>budget)
+        throw std::runtime_error("orbital THC Sigma workspace cannot hold one q vertex slice");
+      const size_t workers=retain?std::min(_cpu_threads,size_t(1.+std::max(0.,budget-base_working)/per_worker)):1;
+      const double working=base_working+(workers-1)*per_worker;
       std::vector<MatrixXcd> projected_g;
-      if(working+double(_nt)*_ns*_nk*rr<=budget) {
+      if((!_orbital || !retain) && working+double(_nt)*_ns*_nk*rr<=budget) {
         projected_g.reserve(_nt*_ns*_nk);
         for(size_t t=0;t<_nt;++t)for(size_t s=0;s<_ns;++s)for(size_t k=0;k<_nk;++k) {
           auto X=_factors->X(k);
@@ -196,7 +215,21 @@ namespace green::mbpt::kernels {
       if(!utils::context().global_rank)std::cout<<"Native THC CPU projections "<<(projected_g.empty()?"streamed":"cached across q")
         <<"; screening auxiliary dimension "<<Q<<"; histories "<<(retain?"owned q retained":"one q streamed")
         <<"; bubble projections "<<(retain?"shared across q per half-tau pair":"one q")
-        <<"; Sigma "<<(retain?"owned q accumulated":time_batch?"one q accumulated":"one (spin,k) streamed")<<std::endl;
+        <<"; Sigma "<<(retain?"owned q accumulated":time_batch?"one q accumulated":"one (spin,k) streamed")
+        <<"; Sigma route "<<(_orbital?"orbital":"point")<<"; tau workers "<<workers<<" requested "<<_cpu_threads<<std::endl;
+      auto build_vertices=[&](size_t q,const MatrixXcd& m) {
+        std::vector<orbital_pair> pairs;
+        for(size_t k=0;k<_nk;++k)for(size_t kp=0;kp<_nk;++kp)if(_factors->transfer(k,kp)==q)
+          pairs.push_back({k,kp,tensors::thc_orbital_vertex(_factors->X(k),_factors->X(kp),m)});
+        return pairs;
+      };
+      auto orbital_tau=[&](size_t t,const MatrixXcd& core,const std::vector<orbital_pair>& pairs) {
+        for(const auto& pair:pairs) {
+          tensors::thc_vertex_matrix weighted=pair.v*core;
+          for(size_t s=0;s<_ns;++s)
+            matrix(sigma(t,s,pair.k))-=tensors::thc_orbital_sigma_weighted(pair.v,weighted,matrix(g(t,s,pair.kp)))/double(_nk);
+        }
+      };
       auto screen_q=[&](size_t q,const MatrixXcd& m) {
         ztensor<4> core(_nt,1,Q,Q),frequency(_nw,1,Q,Q);
         core.set_zero();frequency.set_zero();
@@ -298,20 +331,39 @@ namespace green::mbpt::kernels {
             _ft.w_b_to_tau_f(frequency,core,0,_nt,true);
           }
         }
-        for(size_t t=0;t<_nt;++t) {
-          auto local=project_time(t),point_sigma=point_fields();
-          for(size_t iq=0;iq<qs.size();++iq) {
-            MatrixXcd wc=cores[iq]*matrix(response[iq](t,0))*cores[iq].adjoint();
-            accumulate(t,qs[iq],wc,local,point_sigma);
+        if(_orbital)for(size_t iq=0;iq<qs.size();++iq)
+          if(_vertices[qs[iq]].empty())_vertices[qs[iq]]=build_vertices(qs[iq],cores[iq]);
+        std::exception_ptr failure;
+#pragma omp parallel for schedule(static) num_threads(workers)
+        for(long it=0;it<long(_nt);++it) {
+          try {
+            const size_t t=size_t(it);
+            if(_orbital) {
+              for(size_t iq=0;iq<qs.size();++iq)orbital_tau(t,matrix(response[iq](t,0)),_vertices[qs[iq]]);
+            } else {
+              auto local=project_time(t),point_sigma=point_fields();
+              for(size_t iq=0;iq<qs.size();++iq) {
+                MatrixXcd wc=cores[iq]*matrix(response[iq](t,0))*cores[iq].adjoint();
+                accumulate(t,qs[iq],wc,local,point_sigma);
+              }
+              backproject(t,point_sigma);
+            }
+          }catch(...) {
+#pragma omp critical(thc_sigma_failure)
+            {if(!failure)failure=std::current_exception();}
           }
-          // Every owned q/kp contribution is combined before this projection.
-          backproject(t,point_sigma);
         }
+        if(failure)std::rethrow_exception(failure);
       } else {
         // Bounded fallback: retain one q in Q space and combine its kp terms.
         for(size_t q:qs) {
           MatrixXcd m=_factors->M(q);
           auto response=screen_q(q,m);
+          if(_orbital) {
+            auto pairs=build_vertices(q,m);
+            for(size_t t=0;t<_nt;++t)orbital_tau(t,matrix(response(t,0)),pairs);
+            continue;
+          }
           for(size_t t=0;t<_nt;++t) {
             MatrixXcd wc=m*matrix(response(t,0))*m.adjoint();
             if(time_batch) {
@@ -340,7 +392,9 @@ namespace green::mbpt::kernels {
       }
     }
     size_t _n,_ns,_nk,_nt,_nw;
-    bool _fft=false,_auxiliary=false;
+    bool _fft=false,_auxiliary=false,_orbital=false,_reuse_fft=true;
+    size_t _cpu_threads=1;
+    std::vector<std::vector<orbital_pair>> _vertices;
     std::string _screening="auto";
     size_t _workspace_bytes=0;
     const grids::transformer_t& _ft;

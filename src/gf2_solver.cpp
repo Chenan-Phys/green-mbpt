@@ -151,7 +151,8 @@ namespace green::mbpt {
 
       // Loop over tau indices
 #pragma omp for
-      for (size_t t = tau_offset, ttt = 0; ttt < ntau_local; ++t, ++ttt) {
+      for (size_t ttt = 0; ttt < ntau_local; ++ttt) {
+        const size_t t = tau_offset + ttt;
         int shift = t * _ns * _ink * nao2 + is * _ink * nao2 + momshift;
         int tt    = _nts - t - 1;
         // initialize Green's functions

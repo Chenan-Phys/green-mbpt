@@ -111,6 +111,35 @@ int main(){
         auto actual=ops.download(ops.correlate(da,db,false,true));
         auto reference=cpu.correlate(transposed,b,false,true);
         for(size_t i=0;i<nk;++i)compare(actual[i],reference[i]);
+        auto before=ops.fft_calls();auto prepared=ops.prepare_sigma_right(db);
+        for(size_t spin=0;spin<2;++spin) {
+          auto shared=ops.download(ops.correlate_sigma_prepared(da,prepared));
+          auto expected=cpu.correlate(a,b,true,false);
+          for(size_t i=0;i<nk;++i)compare(shared[i],expected[i]);
+        }
+        if(ops.fft_calls()-before!=(fft?5:0))throw std::runtime_error("CUDA screening FFT was not shared across spins");
+      }
+      ops.configure_momentum(nk,nk,r,transfers,k,q,false);
+      auto repeated=ops.download(ops.repeat(dx,3));
+      for(size_t i=0;i<3*nk;++i)compare(repeated[i],x[i%nk]);
+      for(size_t iq=0;iq<nk;++iq) {
+        const size_t n=2,Q=4;
+        matrix m=10.*values(r,Q,.1+iq),c=10.*values(Q,Q,.3+iq);
+        std::vector<matrix> strong_x=x,strong_g=g;
+        for(auto& value:strong_x)value*=10.;for(auto& value:strong_g)value*=10.;
+        auto vx=ops.upload(strong_x),vg=ops.upload(strong_g);
+        auto vertices=ops.orbital_vertices(vx,ops.upload(m),iq);
+        auto weighted=ops.multiply(vertices,ops.upload(c));
+        auto actual=ops.download(ops.orbital_sigma(vertices,weighted,vg,iq));
+        matrix wc=m*c*m.adjoint();
+        for(size_t ik=0;ik<nk;++ik) {
+          matrix expected=matrix::Zero(n,n);
+          for(size_t kp=0;kp<nk;++kp)if(transfers[ik*nk+kp]==iq) {
+            matrix pg=strong_x[kp]*strong_g[kp]*strong_x[kp].adjoint();
+            expected+=strong_x[ik].adjoint()*pg.cwiseProduct(wc)*strong_x[ik];
+          }
+          compare(actual[ik],expected);
+        }
       }
       ops.finish_stage();
     }
