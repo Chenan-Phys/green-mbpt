@@ -179,7 +179,8 @@ namespace green::mbpt::kernels {
       const double rr=double(r)*r,budget=double(_workspace_bytes)/sizeof(std::complex<double>);
       const double scratch=auxiliary_scratch_elements();
       const double histories=double(qs.size())*(double(_nt)*Q*Q+double(r)*Q);
-      // At Sigma time t, projected G and point Sigma cover all local spins/k.
+      // The same allowance holds either both projected half-time G slices for
+      // the bubble, or projected G plus point Sigma at one time, over spins/k.
       const double time_fields=(2.*_ns*_nk+2)*rr+2.*_nk*r*_n+2.*_nk*_n*_n;
       const bool retain=histories+scratch+time_fields<=budget;
       const bool time_batch=scratch+time_fields<=budget;
@@ -194,6 +195,7 @@ namespace green::mbpt::kernels {
       }
       if(!utils::context().global_rank)std::cout<<"Native THC CPU projections "<<(projected_g.empty()?"streamed":"cached across q")
         <<"; screening auxiliary dimension "<<Q<<"; histories "<<(retain?"owned q retained":"one q streamed")
+        <<"; bubble projections "<<(retain?"shared across q per half-tau pair":"one q")
         <<"; Sigma "<<(retain?"owned q accumulated":time_batch?"one q accumulated":"one (spin,k) streamed")<<std::endl;
       auto screen_q=[&](size_t q,const MatrixXcd& m) {
         ztensor<4> core(_nt,1,Q,Q),frequency(_nw,1,Q,Q);
@@ -265,7 +267,36 @@ namespace green::mbpt::kernels {
         cores.reserve(qs.size());response.reserve(qs.size());
         for(size_t q:qs) {
           cores.emplace_back(_factors->M(q));
-          response.emplace_back(screen_q(q,cores.back()));
+          response.emplace_back(_nt,1,Q,Q);response.back().set_zero();
+        }
+        for(size_t t=0;t<_nt/2;++t) {
+          // Stream just the two projected time slices when the full G cache
+          // does not fit. Every owned q borrows these same complete k fields.
+          auto left=project_time(_nt-t-1),right=project_time(t);
+          for(size_t iq=0;iq<qs.size();++iq) {
+            MatrixXcd bubble=MatrixXcd::Zero(r,r);
+            for(size_t i=0;i<_nk;++i)for(size_t j=0;j<_nk;++j) {
+              if(_factors->transfer(j,i)!=qs[iq])continue;
+              for(size_t s=0;s<_ns;++s) {
+                const auto& first=projected_g.empty()?left[s*_nk+i]:projected_g[((_nt-t-1)*_ns+s)*_nk+i];
+                const auto& second=projected_g.empty()?right[s*_nk+j]:projected_g[(t*_ns+s)*_nk+j];
+                bubble-=(_ns==2?1.:2.)/double(_nk)*first.transpose().cwiseProduct(second);
+              }
+            }
+            MatrixXcd compressed=cores[iq].adjoint()*bubble*cores[iq];
+            matrix(response[iq](t,0))=0.5*(compressed+compressed.adjoint()).eval();
+            matrix(response[iq](_nt-t-1,0))=matrix(response[iq](t,0));
+          }
+        }
+        // Projected half-time fields are released before transform/LU scratch.
+        // Cores and Q-space histories stay resident across these one-q solves.
+        {
+          ztensor<4> frequency(_nw,1,Q,Q);frequency.set_zero();
+          for(auto& core:response) {
+            _ft.tau_f_to_w_b(core,frequency,0,_nw,true);
+            for(size_t w=0;w<_nw;++w)matrix(frequency(w,0))=tensors::thc_screened_core(matrix(frequency(w,0)));
+            _ft.w_b_to_tau_f(frequency,core,0,_nt,true);
+          }
         }
         for(size_t t=0;t<_nt;++t) {
           auto local=project_time(t),point_sigma=point_fields();

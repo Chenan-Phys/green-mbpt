@@ -33,6 +33,12 @@ spins. This reorders time-independent M through linear IR transforms without
 changing the factors, fit tolerance, or screening equation. The q-dependent M
 cannot be moved through momentum FFTs, whose fields remain in point space.
 
+Native GPU auxiliary compression/expansion additionally supports the opt-in
+`--thc_cuda_aux_gemm3m true` complex-double backend. It defaults to false and
+leaves HF, projections, IR transforms and LU/residual checks on the standard
+backend. This alternative reorders real operations within complex GEMMs;
+measure the full result and runtime for the intended shape and GPU.
+
 `--thc_gw_k_contraction direct|fft` defaults to direct. Direct supports full-BZ
 inputs with validated transfer maps. FFT requires a complete Cartesian
 commensurate mesh; irregular/reduced inputs reject the explicit FFT option.
@@ -52,6 +58,9 @@ backprojection per (tau,spin,k). Bounded alternatives stream one q, then one
 space and expands current-tau slices. GPU direct uses bounded
 q tiles and FFT requires all q to fit. CPU library scratch, CUDA contexts and
 library-owned allocations are additional; report process memory separately.
+When histories fit but full projected G does not, CPU direct shares both
+projected half-tau slices across owned q. This reuses projections with bounded
+per-time storage instead of requiring a full point-space G history.
 Low GPU memory trims idle buffers at stage boundaries while retaining within-stage
 reuse. An allocation check leaves 512 MiB of physical GPU headroom.
 

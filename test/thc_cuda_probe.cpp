@@ -16,8 +16,8 @@ int main(){
       for(size_t i=0;i<rows;++i)for(size_t j=0;j<cols;++j)result(i,j)={std::sin(i*.3+j*.7+shift)*.03,std::cos(i*.4-j*.2+shift)*.02};
       return result;
     };
-    for(bool low:{true,false}){
-      gpu ops(low,64ul*1024*1024);
+    for(bool aux_gemm3m:{false,true})for(bool low:{true,false}){
+      gpu ops(low,64ul*1024*1024,aux_gemm3m);
       for(auto dims:std::vector<std::pair<size_t,size_t>>{{5,9},{270,4}}){
         auto m=values(dims.first,dims.second,.1);matrix Z=m*m.adjoint();
         std::vector<matrix> response;
@@ -30,7 +30,7 @@ int main(){
       }
       // Exercise the enlarged batched-LU boundary independently of THC data.
       for(size_t d:{64ul,150ul,256ul}){
-        gpu batched(low,512ul*1024*1024);
+        gpu batched(low,512ul*1024*1024,aux_gemm3m);
         std::vector<matrix> polarizations;
         for(size_t w=0;w<32;++w){matrix seed=values(d,8,.2+w);polarizations.emplace_back(-seed*seed.adjoint());}
         auto actual=batched.download(batched.screen_core(batched.upload(polarizations)));
@@ -39,6 +39,18 @@ int main(){
         try{batched.screen_core(batched.upload(std::vector<matrix>(32,matrix::Identity(d,d))));}
         catch(const std::runtime_error& e){singular=std::string(e.what()).find("singular/invalid LU")!=std::string::npos;}
         if(!singular)throw std::runtime_error("batched singular LU was not rejected");
+      }
+      {
+        std::vector<matrix> cores;
+        for(size_t q=0;q<3;++q)cores.emplace_back(values(7,5,.2+q));
+        matrix response=values(7,7,.6),correlation=values(5,5,.7);
+        auto dm=ops.upload(cores);
+        auto compressed=ops.download(ops.compress(dm,ops.upload(response)));
+        auto expanded=ops.download(ops.expand(dm,ops.upload(correlation)));
+        for(size_t q=0;q<cores.size();++q){
+          compare(compressed[q],matrix(cores[q].adjoint()*response*cores[q]));
+          compare(expanded[q],matrix(cores[q]*correlation*cores[q].adjoint()));
+        }
       }
       for(auto dims:std::vector<std::pair<size_t,size_t>>{{5,3},{3,5}}){
         const size_t r=dims.first,Q=dims.second,nt=6,nw=4;
