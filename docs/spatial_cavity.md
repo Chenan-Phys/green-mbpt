@@ -169,3 +169,21 @@ Hall geometry, line integration of illustrative mode profiles, run scripts,
 saved numerical acceptance checks and figures belong to the separate
 [cavity-Hall project](https://github.com/Chenan-Phys/green-cavity-quantum-hall).
 The mode tests do not establish a reconstructed GaAs edge or Hall resistance.
+
+## Initial validation status
+
+The separate Hall suite has 22 small cases, 44 native HF/GW calls and 418 passing
+numerical checks; the original native regressions pass 943 assertions. Exact
+references check weak-coupling energy/density/photon coefficients, analytic
+quadratic-only squeezing, magnetic reversal, orbital phases, mode sign and
+permutation, grid and spin controls, and fourth-order Peierls truncation errors.
+
+There is a measured physical response limitation. For an interacting four-site
+model coupled only to conserved total N, exact completing-the-square physics
+requires Delta E=−eta²N²/omega and unchanged connected photon variance. At
+Coulomb scale 0.3t, eta=0.04, N=2 and omega=t, the internal GW response has an
+extra −8.53e-7 t shift and a 2.02e-6 Q-variance error. This is recorded separately
+from numerical acceptance. A conserving external response/vertex benchmark is
+still required before electromagnetic gauge or quantitative Hall claims. No
+operator-centering shortcut hides this diagnostic. See the Hall report and
+machine-readable `physical_validation` flags.
