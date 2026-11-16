@@ -6,17 +6,23 @@ computed with electronic resolvents, without truncating excited-state sums.
 Scientific callers must arrange a compute allocation before importing.
 """
 import numpy as np
+from itertools import combinations
 from scipy.sparse import eye,kron,diags,coo_matrix
 from scipy.sparse.linalg import eigsh,cg,LinearOperator
 from spatial_cavity import electronic_basis,lift_onebody
 
 
 class DFReference:
-    def __init__(self,h,vertices,constant,nelectron,singlet=False):
+    def __init__(self,h,vertices,constant,nelectron,singlet=False,polarized=False):
         self.n=len(h)
         if np.max(abs(vertices-vertices.conj().swapaxes(1,2)))>1e-10:
             raise ValueError('Hermitian DF vertices required')
-        self.basis,self.lookup=electronic_basis(self.n,nelectron)
+        if polarized:
+            if singlet or nelectron>self.n: raise ValueError('Invalid fully polarized sector')
+            self.basis=[sum(1<<a for a in c) for c in combinations(range(self.n),nelectron)]
+            self.lookup={state:i for i,state in enumerate(self.basis)}
+        else:
+            self.basis,self.lookup=electronic_basis(self.n,nelectron)
         self.hamiltonian=lift_onebody(h,self.basis,self.lookup)+constant*eye(len(self.basis))
         for vertex in vertices:
             op=self.lift(vertex)
@@ -24,7 +30,7 @@ class DFReference:
         self.hamiltonian=self.hamiltonian.tocsr()
         # S+ maps out of minimal Sz. Build S²=S-S+ + Sz(Sz+1), including
         # fermionic signs, so a requested singlet comparison is explicit.
-        nup,ndown=(nelectron+1)//2,nelectron//2
+        nup,ndown=(nelectron,0) if polarized else ((nelectron+1)//2,nelectron//2)
         sz=(nup-ndown)/2
         targets={};rows=[];cols=[];values=[]
         for col,state in enumerate(self.basis):
@@ -39,7 +45,7 @@ class DFReference:
         raising=coo_matrix((values,(rows,cols)),shape=(len(targets),len(self.basis))).tocsr()
         spin2=raising.conj().T@raising+sz*(sz+1)*eye(len(self.basis))
         self.spin_operator=spin2
-        self.spin_constraint='S=0' if singlet else 'minimal Sz; total spin unrestricted'
+        self.spin_constraint='fully polarized' if polarized else ('S=0' if singlet else 'minimal Sz; total spin unrestricted')
         if singlet:
             if nelectron%2: raise ValueError('Even N required for singlet')
             # Scalar operators used below preserve total S, so the penalty has

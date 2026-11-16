@@ -48,6 +48,11 @@ spin expectation must be zero. Spin-scalar current and density operators preserv
 that subspace, so the penalty does not change its physical resolvents. A singlet
 reference must not be presented as the unrestricted ground state when another
 total-spin sector is lower.
+The optional `polarized=True` reference instead uses N_up=N, N_down=0. At the
+four-electron strip size it has only 70 determinants. Scalar photon coefficients
+agree with the S=2 ground state in the minimal-Sz space, providing an independent
+spin-rotation check and an inexpensive reference for the excited polarized branch
+where the true ground state is a singlet.
 
 ## Equations differentiated
 
