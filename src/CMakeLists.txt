@@ -3,7 +3,7 @@ project(mbpt-lib CXX)
 # Weak coupling many-body framework
 add_library(mbpt common_utils.cpp dyson.cpp hf_solver.cpp gw_solver.cpp gf2_solver.cpp gf2_solver_t_ewald_correction.cpp mbpt_q0_utils_t.cpp
         hf_cpu_kernels.cpp
-        gw_cpu_kernel.cpp)
+        gw_cpu_kernel.cpp spatial_cavity.cpp)
 target_include_directories(mbpt PUBLIC .)
 target_link_libraries(mbpt PUBLIC GREEN::PARAMS GREEN::H5PP GREEN::UTILS GREEN::NDARRAY GREEN::GRIDS GREEN::SYMMETRY GREEN::SC )
 

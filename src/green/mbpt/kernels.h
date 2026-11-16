@@ -31,6 +31,7 @@
 #include "df_integral_t.h"
 #include "except.h"
 #include "mbpt_q0_utils_t.h"
+#include "spatial_cavity.h"
 
 namespace green::mbpt::kernels {
   class gw_cpu_kernel {
@@ -49,6 +50,7 @@ namespace green::mbpt::kernels {
         // _P0_tilde(0, 0, 0, 0),
         _eps_inv_wq(ft.wsample_bose().size(), bz_utils.inq()),
         _coul_int1(nullptr) {
+      _NQ += spatial_cavity::instance().extra_aux();
       _q0_utils.resize(_NQ);
     }
 
@@ -120,6 +122,9 @@ namespace green::mbpt::kernels {
      * @param k - [INPUT] (k1, k2)
      */
     void read_next(const std::array<size_t, 2>& k);
+
+    template <typename prec>
+    void fitted_vertices(tensor<prec,3>& v, const std::array<size_t,2>& k);
 
     /**
      * Evaluate polarization function P for a given job portion (maybe a single k-point or a set of k-points),

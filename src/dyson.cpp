@@ -13,6 +13,7 @@
 
 #include "green/mbpt/common_utils.h"
 #include "green/mbpt/except.h"
+#include "green/mbpt/spatial_cavity.h"
 
 namespace green::mbpt {
 
@@ -43,6 +44,7 @@ namespace green::mbpt {
     }
     make_hermitian(_S_k);
     make_hermitian(_H_k);
+    spatial_cavity::instance().initialize(p, _bz_utils, _S_k);
   }
 
   template <typename G, typename S1, typename St>
@@ -295,7 +297,7 @@ namespace green::mbpt {
     _E_1b             = e1;
     _E_hf             = e2;
     _E_corr           = e3;
-    return diff;
+    return std::max(diff, spatial_cavity::instance().convergence(g.object()));
   }
 
   template <>
@@ -305,7 +307,7 @@ namespace green::mbpt {
     _E_1b             = e1;
     _E_hf             = e2;
     _E_corr           = e3;
-    return diff;
+    return std::max(diff, spatial_cavity::instance().convergence(g));
   }
 
   template <typename G, typename S1, typename St>
@@ -326,6 +328,11 @@ namespace green::mbpt {
       ar["iter" + std::to_string(iter) + "/Energy_HF"] << _E_hf + _E_nuc;
       ar["iter" + std::to_string(iter) + "/Energy_2b"] << _E_corr;
       ar["iter" + std::to_string(iter) + "/mu"] << _mu;
+      if constexpr (std::is_same_v<G, ztensor<5>>) {
+        spatial_cavity::instance().dump(ar, "iter"+std::to_string(iter), gtau, _E_hf+_E_nuc+_E_corr);
+      } else {
+        spatial_cavity::instance().dump(ar, "iter"+std::to_string(iter), gtau.object(), _E_hf+_E_nuc+_E_corr);
+      }
       ar.close();
       std::stringstream ss;
       ss << std::scientific << std::setprecision(15);

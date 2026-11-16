@@ -18,6 +18,11 @@
 
 `Green/WeakCoupling` is a weak-coupling perturbation expansion solver for real materials expressed in Gaussian Bloch orbitals
 
+This `cavity-spatial-modes` research branch extends stable v1.0.0 with finite-system,
+spatial current/quadratic photon modes and joint Coulomb/photon GW screening.
+Read the [Hamiltonian, approximation, input schema and limits](docs/spatial_cavity.md)
+before using it. The separate `cavity-general` molecular branch is retained.
+
 ## Installation
 
 ### Dependencies

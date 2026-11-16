@@ -30,7 +30,8 @@ namespace green::mbpt::kernels {
 
   void gw_cpu_kernel::solve(G_type& g, St_type& sigma_tau) {
     auto cntx = g.cntx();
-    _coul_int1 = new df_integral_t(_path, _nao, _NQ, _bz_utils, cntx);
+    const auto& cavity = spatial_cavity::instance();
+    _coul_int1 = new df_integral_t(_path, _nao, _NQ-cavity.extra_aux(), _bz_utils, cntx);
     utils::shared_object<ztensor<4>> P0_tilde_s(std::array<size_t, 4>{_nts, 1, _NQ, _NQ}, cntx);
     utils::shared_object<ztensor<4>> Pw_tilde_s(std::array<size_t, 4>{_nw_b, 1, _NQ, _NQ}, cntx);
     MPI_Datatype                     dt_matrix     = utils::create_matrix_datatype<std::complex<double>>(_nso * _nso);
@@ -143,12 +144,22 @@ namespace green::mbpt::kernels {
   }
 
   template <typename prec>
+  void gw_cpu_kernel::fitted_vertices(tensor<prec,3>& v, const std::array<size_t,2>& k) {
+    const auto& c=spatial_cavity::instance();
+    if(!c.enabled) { _coul_int1->symmetrize(v,k[0],k[1]); return; }
+    tensor<prec,3> coul(c.coulomb_aux,_nao,_nao);
+    _coul_int1->symmetrize(coul,k[0],k[1]);
+    std::copy(coul.data(),coul.data()+coul.size(),v.data());
+    for(size_t a=0;a<c.extra_aux();++a) matrix(v(c.coulomb_aux+a))=c.vertices[a].template cast<prec>();
+  }
+
+  template <typename prec>
   void gw_cpu_kernel::eval_P0_tilde(const std::array<size_t, 2>& k1_k1q, const G_type& G, ztensor<4>& P0_tilde, size_t local_tau,
                                     size_t tau_offset) {
     // NOTE: k = (k1, k1+q_ir)
     // (Q, p, m) or (Q', t, n)*
     tensor<prec, 3> v(_NQ, _nao, _nao);
-    _coul_int1->symmetrize(v, k1_k1q[0], k1_k1q[1]);
+    fitted_vertices(v, k1_k1q);
     MMatrixX<prec> vm(v.data(), _NQ, _nao * _nao);
     MMatrixX<prec> vmm(v.data(), _NQ * _nao, _nao);
     // #pragma omp parallel
@@ -246,11 +257,28 @@ namespace green::mbpt::kernels {
     // At finite magnetic field P(i nu) is generally not Hermitian at each nu.
     // Its positive/negative-frequency adjoint relation must remain intact.
     Eigen::FullPivLU<MatrixXcd> lusolver(_NQ, _NQ);
+    auto& cavity=spatial_cavity::instance();
+    std::vector<MatrixXcd> responses;
+    if(cavity.enabled) responses.resize(_nw_b);
     for (size_t n = w_offset, loc_n = 0; loc_n < nw_local; ++n, ++loc_n) {
+      if(cavity.enabled) {
+        const MatrixXcd pi=matrix(P0_w(n,0));
+        const MatrixXcd b=cavity.interaction(_ft.wsample_bose()(n));
+        const MatrixXcd w=lusolver.compute(identity-b*pi).solve(b);
+        if(!w.allFinite() || ((identity-b*pi)*w-b).norm()>1e-9*(1+b.norm()))
+          throw std::runtime_error("Spatial cavity: singular joint screening matrix");
+        responses[n]=pi+pi*w*pi;
+        MatrixXcd wc=w;
+        wc.topLeftCorner(cavity.coulomb_aux,cavity.coulomb_aux)-=
+            MatrixXcd::Identity(cavity.coulomb_aux,cavity.coulomb_aux);
+        matrix(P0_w(n,0))=wc;
+        continue;
+      }
       MatrixXcd temp     = identity - matrix(P0_w(n, 0));
       temp               = lusolver.compute(temp).solve(identity).eval();
       matrix(P0_w(n, 0)) = (temp * matrix(P0_w(n, 0))).eval();
     }
+    if(cavity.enabled) cavity.update_photons(responses,_ft);
     statistics.start("P reduce");
     MPI_Win_sync(Pw_s.win());
     MPI_Barrier(P0_tilde.cntx().node_comm);
@@ -281,6 +309,7 @@ namespace green::mbpt::kernels {
 
   template <typename prec>
   MatrixX<prec> gw_cpu_kernel::eval_p0_bz_from_ibz(const ztensor<2>& p0_tilde_q_ibz, size_t q_bz) {
+    if(spatial_cavity::instance().enabled) return matrix(p0_tilde_q_ibz).template cast<prec>();
     MatrixX<prec> U_q(_NQ, _NQ);
     _bz_utils.q_symmetry().q_sym_transform_p0(U_q, q_bz);
     // Symmetry transform P to current q point and apply conjugation if needed
@@ -309,7 +338,7 @@ namespace green::mbpt::kernels {
     size_t          k1_pos       = _bz_utils.k_symmetry().reduced_point(k1_k1mq[0]);
     // (Q, i, m) or (Q', j, n)*
     tensor<prec, 3> v(_NQ, _nao, _nao);
-    _coul_int1->symmetrize(v, k1_k1mq[0], k1_k1mq[1]);
+    fitted_vertices(v, k1_k1mq);
     MMatrixX<prec> vm(v.data(), _NQ * _nao, _nao);
 
     // bosonic momentum q index in FBZ

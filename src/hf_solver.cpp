@@ -4,14 +4,17 @@
  */
 
 #include "green/mbpt/hf_solver.h"
+#include "green/mbpt/spatial_cavity.h"
 
 namespace green::mbpt {
   void hf_solver::solve(utils::shared_object<ztensor<5>>& g, ztensor<4>& sigma1, utils::shared_object<ztensor<5>>&) {
+    spatial_cavity::instance().observe_green(g.object());
     std::array<size_t, 4> shape;
     std::copy(g.object().shape().begin() + 1, g.object().shape().end(), shape.begin());
     ztensor<4> dm(shape);
     dm << g.object()(g.object().shape()[0] - 1);
     dm *= _spin_prefactor;
     sigma1 << _callback(dm);
+    spatial_cavity::instance().add_static(dm, sigma1);
   }
 }  // namespace green::mbpt
