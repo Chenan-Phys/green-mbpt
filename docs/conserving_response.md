@@ -12,6 +12,43 @@ The distinction between an internal GG polarization and a physical response,
 including the derivative of screening, is made explicitly in
 [Kutepov and Kotliar](https://doi.org/10.1103/PhysRevB.96.035108).
 
+The continuum-strip application now explicitly orders the DF contractions as
+`L G`, then screening, then the second vertex. This is the same GW derivative;
+it avoids a costly auxiliary-pair outer-product path selected by NumPy's greedy
+four-operand optimizer. Random complex direct contractions agree within 8e-14,
+and the 995-check main response suite was rerun successfully. On the 8-orbital,
+48-auxiliary strip, engine construction fell from about 59 s to 0.48 s and one
+measured response action took 0.87 s on Pauli. These are reference-Python timings,
+not native GREEN solver benchmarks.
+
+## General Coulomb weak-photon reference
+
+`python/df_photon_reference.py` supplies a small fixed-spin-sector ED reference
+for general complex Hermitian DF vertices, beyond density-density interactions.
+Normal ordering is explicit:
+
+\[
+H_e=d\Gamma(h)+\frac12\sum_Q\{d\Gamma(L_Q)^2-d\Gamma(L_Q^2)\}+c.
+\]
+
+For one mode `eta Q J + eta² Q² K`, define
+`u=-(H_e-E_0+omega)^(-1) J|0>` and
+`v=-(H_e-E_0)_perp^(-1) [K|0>+J u]_perp`.
+Then `C=<K>+<0|J|u>` and
+`delta<O>/eta²=<u|O|u>-<u|u><O>+2 Re <0|O|v>` for Hermitian O.
+The code evaluates the full density matrix, and checks fixed particle number
+without projecting its trace. It includes a separate photon-Fock diagonalization
+for the eta-to-zero energy and density limits. A nondegenerate electronic ground
+state and positive mode frequency are required; this is a zero-temperature
+reference. Minimal Sz includes higher-total-spin states, so the returned S²
+diagnostic must be checked before comparison with a restricted GW solution.
+An explicit `singlet=True` comparison adds `100 S²` to select S=0 in the minimal
+Sz space, with S² built from signed fermionic spin-raising operations. The returned
+spin expectation must be zero. Spin-scalar current and density operators preserve
+that subspace, so the penalty does not change its physical resolvents. A singlet
+reference must not be presented as the unrestricted ground state when another
+total-spin sector is lower.
+
 ## Equations differentiated
 
 For a one-body perturbation u O exp(-i nu tau), solve the linearized Dyson

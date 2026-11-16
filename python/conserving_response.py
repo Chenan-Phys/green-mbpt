@@ -156,8 +156,14 @@ class GWResponse:
                              self.h[None,None]-self.s1[None]-sigma_w)
 
     def polarization(self,g):
-        return -self.spin_weight*np.einsum('Qab,tsbc,Rcd,tsda->tQR',
-            self.l,g,self.l,g[::-1],optimize=True)
+        return self.polarization_pair(g,g[::-1])
+
+    def polarization_pair(self,left,right):
+        # Explicit order avoids a greedy four-operand path with expensive
+        # auxiliary-pair/orbital outer products for continuum DF inputs.
+        lg=np.einsum('Qab,tsbc->tsQac',self.l,left,optimize=True)
+        rg=np.einsum('Rcd,tsda->tsRca',self.l,right,optimize=True)
+        return -self.spin_weight*np.einsum('tsQac,tsRca->tQR',lg,rg,optimize=True)
 
     def hf(self,rho):
         charge=self.spin_weight*np.einsum('Qij,sji->Q',self.l,rho)
@@ -166,7 +172,9 @@ class GWResponse:
         return hartree[None]-exchange
 
     def dynamic(self,g,wct):
-        return -np.einsum('Qim,tsmn,Rnj,tQR->tsij',self.l,g,self.l,wct,optimize=True)
+        lg=np.einsum('Qim,tsmn->tsQin',self.l,g,optimize=True)
+        screened=np.einsum('tQR,tsQin->tsRin',wct,lg,optimize=True)
+        return -np.einsum('tsRin,Rnj->tsij',screened,self.l,optimize=True)
 
     def setup(self, transfer_index):
         if not isinstance(transfer_index,(int,np.integer)) or transfer_index<0:
@@ -197,10 +205,7 @@ class GWResponse:
         ds1=self.hf(drho) if hartree_exchange else np.zeros_like(self.s1)
         dst=self.dynamic(dg,self.wt) if dynamic else np.zeros_like(self.gt)
         if screening and dynamic:
-            dp=-self.spin_weight*(np.einsum('Qab,tsbc,Rcd,tsda->tQR',
-                self.l,dg,self.l,self.gt[::-1],optimize=True)+
-                setup['phase'][:,None,None]*np.einsum('Qab,tsbc,Rcd,tsda->tQR',
-                self.l,self.gt,self.l,dg[::-1],optimize=True))
+            dp=self.polarization_pair(dg,self.gt[::-1])+setup['phase'][:,None,None]*self.polarization_pair(self.gt,dg[::-1])
             dpw=setup['bmaps'].forward(dp)
             dw=setup['w_shift']@dpw@setup['w_w']
             dwt=setup['bmaps'].backward(dw)
