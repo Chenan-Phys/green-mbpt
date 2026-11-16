@@ -187,3 +187,9 @@ from numerical acceptance. A conserving external response/vertex benchmark is
 still required before electromagnetic gauge or quantitative Hall claims. No
 operator-centering shortcut hides this diagnostic. See the Hall report and
 machine-readable `physical_validation` flags.
+
+A separate [conserving external-response reference](conserving_response.md) now
+differentiates the electronic GW equations, including delta W. It passes the
+specified small response/gauge tests and substantially improves the weak-cavity
+energy benchmark. The C++ fully coupled photon loop described above remains
+unchanged; its response limitation is not silently reclassified as fixed.

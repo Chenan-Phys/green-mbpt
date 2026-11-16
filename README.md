@@ -22,6 +22,9 @@ This `cavity-spatial-modes` research branch extends stable v1.0.0 with finite-sy
 spatial current/quadratic photon modes and joint Coulomb/photon GW screening.
 Read the [Hamiltonian, approximation, input schema and limits](docs/spatial_cavity.md)
 before using it. The separate `cavity-general` molecular branch is retained.
+The [conserving-response reference](docs/conserving_response.md) differentiates
+the electronic GW solution for small external-response and weak-photon tests;
+it is separate from the C++ coupled photon feedback loop.
 
 ## Installation
 
