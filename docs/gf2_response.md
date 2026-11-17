@@ -31,6 +31,11 @@ The existing two-leg IR representation and matrix-free GMRES solver are reused.
 There is no screening-only approximation or frozen self-energy in the conserving
 variant. `fixed_W` is deliberately unavailable for GF2.
 
+For larger translation-invariant strips, see
+[the exact block representation](translation_response.md). The same functional
+can omit its forbidden momentum elements, and spin-resolved one-body terms are
+accepted. Numerical HF preconditioning changes the linear solver, not its kernel.
+
 The class rejects a checkpoint unless reconstruction of Dyson, Hartree/Fock and
 the full cubic GF2 self-energy meets a 1e-7 absolute residual bound. Its internal
 `static_derivative_check` takes a variation already expressed on the response

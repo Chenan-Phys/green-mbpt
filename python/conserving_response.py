@@ -108,6 +108,8 @@ class GWResponse:
         self.g,self.s1,self.st=np.asarray(g),np.asarray(sigma1),np.asarray(sigma_tau)
         self.mu,self.ir=mu,IRTransforms(grid,beta)
         self.ns,self.n=g.shape[1],g.shape[-1]
+        if self.h.shape not in ((self.n,self.n),(self.ns,self.n,self.n)):
+            raise ValueError('One-body Hamiltonian must be common or spin resolved')
         self.spin_weight=2 if self.ns==1 else 1
         if g.shape!=(len(self.ir.tau),self.ns,self.n,self.n):
             raise ValueError('Unexpected checkpoint dimensions')
@@ -153,7 +155,7 @@ class GWResponse:
 
     def dyson(self, sigma_w, frequencies):
         return np.linalg.inv((1j*frequencies[:,None,None,None]+self.mu)*np.eye(self.n)-
-                             self.h[None,None]-self.s1[None]-sigma_w)
+                             self.h[None]-self.s1[None]-sigma_w)
 
     def polarization(self,g):
         return self.polarization_pair(g,g[::-1])
