@@ -33,6 +33,25 @@ This class does not retain a global internal W array for `projected_rpa` or the
 older thermodynamic GW cumulant diagnostic. Use the full representation for
 those separate diagnostics.
 
+`translation_sparse_gw.SparseBlockGWResponse` further stores only the nonzero
+orbital blocks of each Coulomb vertex. Its polarization traces both directions
+of every edge in orbital space. Its self-energy retains every two-vertex path,
+including off-block outputs for an arbitrary complex W; the physical screened
+interaction cancels those outputs through translation invariance. No real,
+time-even or diagonal approximation to W is made. The constructor retains the
+original dense native-functional certificate. Repeated response actions use
+the sparse contractions. Application checks compare complex, non-Hermitian
+random propagator blocks and arbitrary complex W against the dense formulas,
+then compare the response, its finite-difference derivative and the physical
+32-orbital native checkpoint. Adding this representation does not alter the
+existing dense kernels or their saved-source hashes.
+
+The first Pauli validation passes all six sparse checks. On the physical
+32-orbital state, the dense/sparse self-energy difference is 1.1e-15 and the
+difference from the native checkpoint is 6.9e-11. The same single-thread Python
+functional evaluation takes 12.63 s dense and 1.38 s sparse in that allocation.
+This is a measured contraction timing, not a general solver speedup claim.
+
 `translation_response.solve` stores Krylov unknowns in the invariant orbital
 blocks. The uniform number mode remains in this space. This is a representation
 of the physical translation symmetry, not a charge projection or a substituted
