@@ -1,5 +1,11 @@
 # Spatial current and quadratic photon modes
 
+The [finite-coupling response and reservoir extension](coupled_gw_response.md)
+now differentiates the full set of stationary equations described here. It
+adds gate and photon-force response and an optional equilibrium terminal
+embedding. The internal GW screening approximation below still defines the
+stationary state.
+
 Implementation branch: `cavity-spatial-modes`, based directly on stable GREEN
 v1.0.0 (`d593a9c`) plus the finite-magnetic-response correction (`25c893a`).
 The older `cavity-general` molecular dipole branch is separate. This interface

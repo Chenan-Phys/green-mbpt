@@ -91,13 +91,13 @@ def electronic_basis(norb, nelectron):
     return basis, {s:i for i,s in enumerate(basis)}
 
 
-def lift_onebody(matrix, basis, lookup):
-    """Independent bit-string second quantization, fixed N_up,N_down."""
+def lift_onebody(matrix, basis, lookup, *, spins=(0, 1)):
+    """Bit-string second quantization in the specified fixed-spin sector."""
     from scipy.sparse import coo_matrix
     n = len(matrix)
     rows, cols, values = [], [], []
     for col, state in enumerate(basis):
-        for spin in range(2):
+        for spin in spins:
             for j in range(n):
                 bj = spin*n+j
                 if not (state>>bj)&1:

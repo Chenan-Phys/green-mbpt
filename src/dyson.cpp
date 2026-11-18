@@ -208,6 +208,8 @@ namespace green::mbpt {
       for (int ic = 0; ic < _nw; ++ic) {
         std::complex<double> muomega = _ft.wsample_fermi()(ic) * 1.0i + _mu;
         matrix(G_w(ic)) = muomega * matrix(_S_k(is, ik)) - matrix(_H_k(is, ik)) - matrix(sigma1(is, ik)) - matrix(Sigma_w(ic));
+        if (!spatial_cavity::instance().lead_sites.empty())
+          spatial_cavity::instance().embed_leads(matrix(G_w(ic)), muomega);
         matrix(G_w(ic)) = lusolver.compute(matrix(G_w(ic))).inverse().eval();
       }
 
@@ -261,6 +263,8 @@ namespace green::mbpt {
       for (int ic = 0; ic < _nw; ++ic) {
         std::complex<double> muomega = _ft.wsample_fermi()(ic) * 1.0i + _mu;
         matrix(G_w(ic)) = muomega * matrix(_S_k(is, ik)) - matrix(_H_k(is, ik)) - matrix(sigma1(is, ik)) - matrix(Sigma_w(ic));
+        if (!spatial_cavity::instance().lead_sites.empty())
+          spatial_cavity::instance().embed_leads(matrix(G_w(ic)), muomega);
         matrix(G_w(ic)) = lusolver.compute(matrix(G_w(ic))).inverse().eval();
         // G_w(ic).matrix() = G_w(ic).matrix().inverse();
       }
@@ -339,7 +343,8 @@ namespace green::mbpt {
       ss << std::setw(35) << "One-body Energy: " << std::setw(17) << std::right << _E_1b << std::endl;
       ss << std::setw(35) << "HF Energy: " << std::setw(17) << std::right << _E_hf + _E_nuc << std::endl;
       ss << std::setw(35) << "Correlation Energy: " << std::setw(17) << std::right << _E_corr << std::endl;
-      ss << std::setw(35) << "Total Energy: " << std::setw(17) << std::right << _E_hf + _E_nuc + _E_corr << std::endl;
+      const char* label=spatial_cavity::instance().lead_sites.empty() ? "Total Energy: " : "Central electronic GM energy: ";
+      ss << std::setw(35) << label << std::setw(17) << std::right << _E_hf + _E_nuc + _E_corr << std::endl;
       std::cout << ss.str();
       print_convergence(iter, gtau, result_file);
     }

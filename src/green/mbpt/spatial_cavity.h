@@ -23,6 +23,8 @@ namespace green::mbpt::spatial_cavity {
     std::vector<MatrixXcd> current, quadratic, vertices;
     std::vector<std::pair<size_t, size_t>> probes;
     std::vector<double> probe_scale;
+    std::vector<int> lead_sites;
+    std::vector<double> lead_onsite, lead_hopping, lead_coupling;
     ztensor<4> photon_w;
     ztensor<5> previous_green;
 
@@ -30,6 +32,7 @@ namespace green::mbpt::spatial_cavity {
     MatrixXcd density(const ztensor<5>& g) const;
     void observe_green(const ztensor<5>& g);
     void initialize(const params::params& p, const symmetry::brillouin_zone_utils& bz, const ztensor<4>& overlap);
+    void embed_leads(MMatrixXcd inverse, std::complex<double> z) const;
     void add_static(const ztensor<4>& physical_dm, ztensor<4>& sigma);
     MatrixXd bare_covariance(double nu) const;
     MatrixXcd interaction(double nu) const;

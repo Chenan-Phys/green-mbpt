@@ -48,7 +48,10 @@ namespace green::mbpt::spatial_cavity {
   void state::initialize(const params::params& p, const symmetry::brillouin_zone_utils& bz, const ztensor<4>& overlap) {
     *this = state{};
     h5pp::archive ar(p["input_file"]);
-    if (!ar.has_group("QED")) return;
+    if (!ar.has_group("QED")) {
+      require(!ar.has_group("Leads"),"equilibrium reservoirs require the finite-system spatial QED interface");
+      return;
+    }
     int schema = 0, finite_system = 0;
     std::string model;
     ar["QED/schema"] >> schema;
@@ -106,6 +109,24 @@ namespace green::mbpt::spatial_cavity {
       probe_scale.push_back(std::sqrt(2/std::sqrt(omega(a)*omega(b))));
     }
     beta=p["BETA"];
+    if (ar.has_group("Leads")) {
+      std::string kind;
+      ar["Leads/model"] >> kind;
+      require(kind=="local_chain" && !p["const_density"].as<bool>(),
+              "local-chain equilibrium reservoirs require fixed chemical potential");
+      ar["Leads/sites"] >> lead_sites;
+      ar["Leads/onsite"] >> lead_onsite;
+      ar["Leads/hopping"] >> lead_hopping;
+      ar["Leads/coupling"] >> lead_coupling;
+      const size_t nl=lead_sites.size();
+      require(nl && lead_onsite.size()==nl && lead_hopping.size()==nl && lead_coupling.size()==nl,
+              "each terminal needs an orbital, onsite energy, chain hopping and tunnel amplitude");
+      for(size_t a=0;a<nl;++a) {
+        require(lead_sites[a]>=0 && size_t(lead_sites[a])<nao && std::isfinite(lead_onsite[a])
+                && std::isfinite(lead_hopping[a]) && lead_hopping[a]>=0 && std::isfinite(lead_coupling[a]),
+                "invalid local-chain reservoir parameters");
+      }
+    }
     energy_threshold=p["E_thr"];
     correlated=method==GW;
     q=Eigen::VectorXd::Zero(modes);
@@ -113,6 +134,17 @@ namespace green::mbpt::spatial_cavity {
     covariance_p=covariance_q;
     mixed_kq=MatrixXd::Zero(probes.size(),modes);
     enabled=true;
+  }
+
+  void state::embed_leads(MMatrixXcd inverse, std::complex<double> z) const {
+    for(size_t a=0;a<lead_sites.size();++a) {
+      const auto x=z-lead_onsite[a];
+      const double t=lead_hopping[a];
+      // Principal roots give the decaying branch on both Matsubara half axes.
+      // A zero chain hopping leaves one explicit, discrete terminal level.
+      const auto surface=t==0 ? 1./x : 2./(x+std::sqrt(x-2*t)*std::sqrt(x+2*t));
+      inverse(lead_sites[a],lead_sites[a])-=lead_coupling[a]*lead_coupling[a]*surface;
+    }
   }
 
   void state::add_static(const ztensor<4>& dm, ztensor<4>& sigma) {
@@ -255,7 +287,8 @@ namespace green::mbpt::spatial_cavity {
 
   void state::dump(h5pp::archive& ar,const std::string& path,const ztensor<5>& g,double raw_energy) const {
     if(!enabled) return;
-    ar[path+"/Energy_total_QED"] << raw_energy+energy_correction(g);
+    ar[path+(lead_sites.empty()?"/Energy_total_QED":"/Energy_central_QED")] << raw_energy+energy_correction(g);
+    if(!lead_sites.empty()) ar[path+"/Leads/terminal_count"] << int(lead_sites.size());
     ar[path+"/QED/energy_GM_correction"] << energy_correction(g);
     ar[path+"/QED/photon_energy"] << photon_energy();
     ar[path+"/QED/mixed_linear_energy"] << mixed_energy;
