@@ -31,6 +31,8 @@
 #include "gf2_solver.h"
 #include "gw_solver.h"
 #include "hf_solver.h"
+#include "spatial_cavity.h"
+#include <vector>
 #include "except.h"
 
 namespace green::mbpt {
@@ -186,6 +188,23 @@ namespace green::mbpt {
     MPI_Barrier(utils::context().global);
   }
 
+  struct spatial_gf2_solver {
+    gf2_solver& electronic;
+    gw_solver& photon_rings;
+
+    void solve(utils::shared_object<ztensor<5>>& g, ztensor<4>& s1, utils::shared_object<ztensor<5>>& st) {
+      electronic.solve(g,s1,st);
+      st.fence();
+      auto& sigma = st.object();
+      std::vector<std::complex<double>> second_born(sigma.data(),sigma.data()+sigma.size());
+      photon_rings.solve(g,s1,st);
+      st.fence();
+      // The finite-system spatial interface enforces a single MPI rank.
+      for (size_t i=0; i<sigma.size(); ++i) sigma.data()[i] += second_born[i];
+      st.fence();
+    }
+  };
+
   inline void sc_job(sc::sc_loop<shared_mem_dyson>& sc, const params::params& p, scf_type type, shared_mem_dyson& dyson,
                      utils::shared_object<ztensor<5>>& G_tau, utils::shared_object<ztensor<5>>& Sigma_tau, ztensor<4>& Sigma1) {
     read_hartree_fock_selfenergy(p, dyson.bz_utils(), Sigma1);
@@ -210,6 +229,13 @@ namespace green::mbpt {
       }
       case GF2: {
         gf2_solver             gf2(p, dyson.ft(), dyson.bz_utils());
+        if (spatial_cavity::instance().enabled) {
+          gw_solver rings(p, dyson.ft(), dyson.bz_utils(), dyson.S_k());
+          spatial_gf2_solver coupled{gf2,rings};
+          sc::composition_solver cs(hf,coupled);
+          sc.solve(cs, dyson.H_k(), dyson.S_k(), G_tau, Sigma1, Sigma_tau);
+          break;
+        }
         sc::composition_solver cs(hf, gf2);
         sc.solve(cs, dyson.H_k(), dyson.S_k(), G_tau, Sigma1, Sigma_tau);
         break;

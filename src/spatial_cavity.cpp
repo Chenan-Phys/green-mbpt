@@ -69,7 +69,7 @@ namespace green::mbpt::spatial_cavity {
     require(nao==nso && (ns==1 || ns==2), "only scalar one/two-spin calculations are supported");
     require(p["kernel"].as<kernel_type>()==CPU, "only the CPU kernel is supported");
     const auto method=p["scf_type"].as<scf_type>();
-    require(method==HF || method==GW, "only HF and GW are supported");
+    require(method==HF || method==GW || method==GF2, "expected HF, GW or GF2");
     require(!p["P_sp"].as<bool>() && !p["Sigma_sp"].as<bool>(), "double precision is required");
     require(bz.k_symmetry().tr_conj_list()[0]==0 && bz.q_symmetry().tr_conj_list()[0]==0,
             "antiunitary reduction is incompatible with this finite-system interface");
@@ -128,7 +128,8 @@ namespace green::mbpt::spatial_cavity {
       }
     }
     energy_threshold=p["E_thr"];
-    correlated=method==GW;
+    second_born=method==GF2;
+    correlated=method==GW || second_born;
     q=Eigen::VectorXd::Zero(modes);
     covariance_q=MatrixXd::Identity(modes,modes);
     covariance_p=covariance_q;

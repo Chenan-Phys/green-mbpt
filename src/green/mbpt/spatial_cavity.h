@@ -13,6 +13,7 @@ namespace green::mbpt::spatial_cavity {
   // Dyson construction resets this object, including when input has no QED group.
   struct state {
     bool enabled = false, correlated = false, have_covariance = false;
+    bool second_born = false;
     size_t modes = 0, nao = 0, ns = 0, coulomb_aux = 0;
     double beta = 0, energy_threshold = 0, residual = 0, density_residual = 0, green_residual = 0, mixed_energy = 0;
     Eigen::VectorXd omega, q, frequencies, old_q;

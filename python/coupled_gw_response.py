@@ -1,4 +1,4 @@
-"""External Matsubara response of a native spatial-cavity GW fixed point.
+"""External Matsubara response of a native spatial-cavity GW or GF2 fixed point.
 
 Unscaled auxiliary vertices are (Coulomb, J + 2 K q, independent K probes).
 The joint screened interaction has W_pp = -C. Both its frequency legs vary.
@@ -24,10 +24,15 @@ def _exchange(left, right, g, w):
 
 
 class CoupledGWResponse:
-    """Differentiate the finite-Gamma, orthonormal, real-mode GREEN GW equations."""
+    """Differentiate the finite-Gamma, orthonormal, real-mode GREEN equations.
+
+    electronic_method must match the native checkpoint. GF2 uses the stable
+    electronic second-Born diagrams and the same photon-containing rings as GW.
+    """
 
     def __init__(self, h, coulomb, g, sigma1, sigma_tau, mu, grid, beta,
-                 omega, current, quadratic, q, covariance_q, mixed_kq, photon_w, *, leads=None):
+                 omega, current, quadratic, q, covariance_q, mixed_kq, photon_w, *,
+                 leads=None, electronic_method='GW'):
         import irbasis
         self.omega, self.j, self.k = validate(omega, current, quadratic)
         self.h, self.l = np.asarray(h), np.asarray(coulomb)
@@ -46,6 +51,16 @@ class CoupledGWResponse:
         self.q, self.sq = np.asarray(q), np.asarray(covariance_q)
         self.pairs = [(a, b) for a in range(self.m) for b in range(a, self.m)]
         nc = len(self.l)
+        if electronic_method not in ('GW', 'GF2'):
+            raise ValueError('Expected GW or GF2 electron correlation')
+        self.second_born = electronic_method == 'GF2'
+        self.cc = slice(0,nc)
+        if self.second_born:
+            from gf2_response import coulomb_tensor
+            # The explicit lead ends have exactly zero Coulomb matrix elements.
+            self.active = np.flatnonzero(np.any(self.l != 0, axis=(0,1)))
+            self.active_pair = np.ix_(self.active,self.active)
+            self.eri = coulomb_tensor(self.l[:,self.active_pair[0],self.active_pair[1]])
         self.ph = slice(nc, nc+self.m)
         self.probes = slice(nc+self.m, None)
         if (self.q.shape != (self.m,) or self.sq.shape != (self.m, self.m)
@@ -62,7 +77,12 @@ class CoupledGWResponse:
         self.w = self._screen(self.ir.bomega, self.pi)
         self.sw = self.ir.f_to_w(self.st)
         wc = self.w-self.instant
+        if self.second_born:
+            wc[:, self.cc, self.cc] = (self.w[:, self.cc, self.cc]
+                                        - self._electronic_screen(self.pi))
         sigma_t = _exchange(self.v, self.v, self.g, self.ir.w_to_btau(wc))
+        if self.second_born:
+            sigma_t += self._second_order(self.g,self.g,self.g[::-1])
         static = self._hf(-self.g[-1]) + np.einsum('a,aij->ij', self.q, self.j)
         static += np.einsum('ab,abij->ij', np.outer(self.q, self.q)+self.sq, self.k)
         z = -self.ir.w_to_btau((self.pi@self.w)[:, self.probes, self.ph])[0]
@@ -98,6 +118,7 @@ class CoupledGWResponse:
         self.x = np.unique(np.r_[-1., self.ir.fx, self.ir.bx, quadrature, 1.])
         self.gt = transform(basis_tau(self.fb, self.x, beta), self.gc)
         self.wt = transform(basis_tau(self.bb, self.x, beta), self.wc)
+        self.tangent = None
         self._setups = {}
 
     @staticmethod
@@ -108,6 +129,17 @@ class CoupledGWResponse:
         charge = self._trace(self.l, self.mult*rho.sum(axis=0))
         return (np.einsum('a,aij->ij', charge, self.l)
                 - np.einsum('aim,smn,anj->sij', self.l, rho, self.l, optimize=True))
+
+    def _second_order(self, a, b, c):
+        from gf2_response import cubic
+        out = np.zeros_like(a)
+        if self.active.size:
+            i,j = self.active_pair
+            out[...,i,j] = cubic(a[...,i,j],b[...,i,j],c[...,i,j],self.eri,self.mult)
+        return out
+
+    def _electronic_screen(self, pi):
+        return np.linalg.inv(np.eye(len(self.l))-pi[:,self.cc,self.cc])
 
     def _c0(self, nu):
         diagonal = (np.asarray(nu)[:, None]**2+self.omega**2)/(2*self.omega)
@@ -178,12 +210,30 @@ class CoupledGWResponse:
         dwt = bm.backward(dw)
         ds = -dwt[0, self.ph, self.ph]
         dz = -bm.backward((dpi@wr+pil@dw)[:, self.probes, self.ph])[0]
+        if self.second_born:
+            # Only the electron exchange subtracts the pure Coulomb ring.
+            # ds and dz above use the full joint photon solution.
+            cc = self.cc
+            dw[:,cc,cc] -= self._electronic_screen(pil)@dpi[:,cc,cc]@self._electronic_screen(setup[2][1])
+            dwt = bm.backward(dw)
         static = self._hf(drho) + np.einsum('a,aij->ij', dq, self.je)
         static += np.einsum('ab,abij->ij', ds, self.k)
         dynamic = _exchange(self.v, self.v, dg, self.wt)
         dynamic += _exchange(self.v, self.v, self.gt, dwt)
         dynamic += _exchange(dv, self.v, self.gt, self.wt)
         dynamic += phase[:, None, None, None]*_exchange(self.v, dv, self.gt, self.wt)
+        if self.second_born:
+            i,j = self.active_pair
+            cache_bytes = 2*len(self.x)*dg.shape[1]**2*len(i)**4*16
+            if len(i) and cache_bytes <= 384*1024**2:
+                if self.tangent is None:
+                    from second_born_tangent import SecondBornTangent
+                    self.tangent = SecondBornTangent(self.gt[...,i,j],self.eri,self.mult)
+                dynamic[...,i,j] += self.tangent.apply(dg[...,i,j],phase)
+            else:
+                dynamic += self._second_order(dg,self.gt,self.gt[::-1])
+                dynamic += self._second_order(self.gt,dg,self.gt[::-1])
+                dynamic += phase[:,None,None,None]*self._second_order(self.gt,self.gt,dg[::-1])
         force = self._trace(self.je, total) + 2*self._mixed_force(dz)
         return static+fm.forward(dynamic), force, drho, ds, dz
 

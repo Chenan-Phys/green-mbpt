@@ -25,6 +25,35 @@ The solve uses \(\delta G=G_L(U+\delta\Sigma)G_R\) and this oscillator equation 
 
 The internal photon propagator of one-loop GW and the external response to a force are distinct observables of this approximation. The latter satisfies the tested conserved-number limit while the former retains a measurable variance error. Two-photon exchange from fluctuations of the quadratic matter vertex and higher skeleton diagrams remain outside native GW. The thermal Fock-space reference includes all terms of the specified finite Hamiltonian and provides a direct accuracy comparison. The distinction between an internal screening bubble and a source derivative follows the conserving-response construction. [Baym and Kadanoff](https://doi.org/10.1103/PhysRev.124.287)
 
+## Electronic GF2 with dynamical photons
+
+For a finite spatial input select `--scf_type GF2` in the native solver and
+`electronic_method='GF2'` in `CoupledGWResponse`. The Hamiltonian, Gaussian
+quadratic vertex, coherent field, lead embedding and full joint photon screening
+are shared with GW. The choice changes the electronic Coulomb approximation.
+At every iteration the dynamic electron self-energy is
+
+\[
+\Sigma_{2,C}[G]+\Sigma_{\mathrm{ring},C+\gamma}[G,q,S]
+                  -\Sigma_{\mathrm{ring},C}[G].
+\]
+
+Here the ring quantities use the same dressed electron propagator at both
+vertices. Native GF2 supplies the direct and exchange second-order Coulomb
+diagrams. Subtracting the purely Coulomb screened interaction before the
+exchange contraction leaves the mixed and photon rings. HF and the photon
+tadpoles each enter once. The external derivative includes all three electron
+lines of the second-Born term and the subtraction
+\(W_{C,L}\,\delta\Pi_{CC}\,W_{C,R}\) for the electronic self-energy. The joint
+photon propagator and mixed force use the full screening matrix.
+
+At zero light–matter coupling this construction recovers electronic GF2. With
+zero Coulomb vertices it agrees with the spatial GW solver at finite coupling.
+It omits photon vertex corrections beyond the shared ring/Gaussian treatment,
+including two-photon exchange from fluctuations of the quadratic vertex. Both
+solvers therefore share potential photon-sector errors. Comparing them tests
+the sensitivity to the electronic closure at the specified filling and fields.
+
 ## Equilibrium particle reservoirs
 
 Optional HDF5 group `Leads` uses model `local_chain`, a zero-based orbital per terminal, and real arrays `onsite`, `hopping` and `coupling`. Each terminal is an independent semi-infinite normal chain. A chain hopping of zero gives one discrete contact orbital. The embedding accepts the finite spatial QED interface at fixed chemical potential. The open checkpoint stores `Energy_central_QED` as a central-energy diagnostic. The reservoir thermodynamic potential requires additional terms.

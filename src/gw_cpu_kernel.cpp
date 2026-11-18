@@ -269,8 +269,19 @@ namespace green::mbpt::kernels {
           throw std::runtime_error("Spatial cavity: singular joint screening matrix");
         responses[n]=pi+pi*w*pi;
         MatrixXcd wc=w;
-        wc.topLeftCorner(cavity.coulomb_aux,cavity.coulomb_aux)-=
-            MatrixXcd::Identity(cavity.coulomb_aux,cavity.coulomb_aux);
+        const auto nc = cavity.coulomb_aux;
+        const MatrixXcd unit = MatrixXcd::Identity(nc,nc);
+        if (cavity.second_born) {
+          // Native GF2 supplies every purely electronic correlation diagram.
+          // Retain only rings containing a photon, on the same dressed G.
+          const MatrixXcd dielectric = unit-pi.topLeftCorner(nc,nc);
+          const MatrixXcd electronic = dielectric.fullPivLu().solve(unit);
+          if (!electronic.allFinite() || (dielectric*electronic-unit).norm()>1e-9*(1+unit.norm()))
+            throw std::runtime_error("Spatial GF2: singular electronic screening matrix");
+          wc.topLeftCorner(nc,nc) -= electronic;
+        } else {
+          wc.topLeftCorner(nc,nc) -= unit;
+        }
         matrix(P0_w(n,0))=wc;
         continue;
       }
