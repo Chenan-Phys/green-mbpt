@@ -26,6 +26,13 @@ The [conserving-response reference](docs/conserving_response.md) differentiates
 the electronic GW solution for small external-response and weak-photon tests;
 it is separate from the C++ coupled photon feedback loop.
 
+The `optical-tdhf-response` branch adds a Python solver for the optical
+response of a real static exchange kernel. It accepts the forward and reverse
+transition blocks, current matrix elements and longitudinal charge channels.
+The returned poles and amplitudes can be used in a frequency-dependent photon
+propagator. [Optical response implementation](python/optical_tdhf.py) ·
+[Direct density-matrix resolvent test](test/test_optical_tdhf.py)
+
 ## Installation
 
 ### Dependencies
